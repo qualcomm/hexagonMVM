@@ -1,0 +1,11 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: BSD-3-Clause-Clear
+
+[package]
+name = "minivm-thread"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+minivm-types = { path = "../minivm-types" }

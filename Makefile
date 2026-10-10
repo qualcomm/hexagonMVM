@@ -1,73 +1,71 @@
-ARCH=hexagon-unknown-none-elf-
-CC=${ARCH}clang
-LD=${CC}
-OBJCOPY=${ARCH}objcopy
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: BSD-3-Clause-Clear
+#
+# Makefile for building and running guest test binaries on QEMU.
 
-ARCHV?=73
-GUEST_ENTRY?=0xc0000000
-USER_TEXT?=0x20000000
-USER_RODATA?=0x20400000
-USER_DATA?=0x20800000
-USER_DATA2?=0x20900000
+CLANG     ?= clang
+OBJCOPY   ?= llvm-objcopy
+QEMU      ?= qemu-system-hexagon
+MINIVM    ?= target/hexagon-unknown-none-elf/debug/minivm
+BUILD_DIR := target/guest-tests
 
-TESTS=$(wildcard tests/*.S)
-TESTS_BIN=$(patsubst tests/%.S,tests_bin/%,${TESTS})
-RUN_TESTS=$(patsubst tests/%.S,run-%,${TESTS})
+# Allow the Rust linker to be overridden via CC (used in CI with a cross clang).
+# When CC is not set, .cargo/config.toml supplies the linker.
+ifdef CC
+export CARGO_TARGET_HEXAGON_UNKNOWN_NONE_ELF_LINKER := $(CC)
+endif
 
-all: minivm test
+GUEST_TESTS := first test_vmversion test_interrupts test_processors test_mmu
 
-CFLAGS_EXTRA+=-mv${ARCHV} -O0 -g -DGUEST_ENTRY=${GUEST_ENTRY}
-ASFLAGS_EXTRA+=${CFLAGS_EXTRA}
-LDFLAGS_EXTRA+=-nostdlib -static
-GUEST_LDFLAGS=-nostdlib \
-    -Wl,-section-start,.start=${GUEST_ENTRY} \
-    -Wl,-section-start,.user_text=${USER_TEXT} \
-    -Wl,-section-start,.user_rodata=${USER_RODATA} \
-    -Wl,-section-start,.user_data=${USER_DATA} \
-    -Wl,-section-start,.user_data2=${USER_DATA2}
+.PHONY: guest-tests minivm minivm-with-tests on-target-tests zephyr-boot clean-guest-tests
 
-OBJS=minivm.o
+guest-tests: $(addprefix $(BUILD_DIR)/, $(addsuffix .pass, $(GUEST_TESTS)))
+	@echo "All guest tests passed."
 
-prefix?=/usr/local
-exec_prefix?=$(prefix)
-bindir?=$(exec_prefix)/bin
+minivm:
+	cargo build -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem
 
-minivm.o: minivm.S hexagon_vm.h
-	${CC} ${CFLAGS} ${CFLAGS_EXTRA} -c -o $@ $<
+minivm-with-tests:
+	cargo build -Zbuild-std=core,alloc \
+		-Zbuild-std-features=compiler-builtins-mem --features run-tests
 
-minivm: ${OBJS} Makefile hexagon.lds
-	${LD} -o $@ -T hexagon.lds ${OBJS} ${LDFLAGS} ${LDFLAGS_EXTRA}
+on-target-tests: minivm-with-tests
+	@echo "  ON-TARGET TESTS"
+	timeout 60 $(QEMU) -M virt -nographic \
+		-kernel target/hexagon-unknown-none-elf/debug/minivm
 
-tests_bin/%: tests/%.S hexagon_vm.h Makefile
-	@mkdir -p tests_bin
-	${CC} ${CFLAGS} ${CFLAGS_EXTRA} -o $@ $< ${GUEST_LDFLAGS}
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
 
-.PHONY: test build_tests run_tests FORCE
-test:
-	make build_tests
-	make run_tests
+$(BUILD_DIR)/%.elf: tests/%.S hexagon_vm.h tests/guest.ld | $(BUILD_DIR)
+	$(CLANG) --target=hexagon -mcpu=hexagonv73 -nostdlib -fuse-ld=lld \
+		-T tests/guest.ld -I. -o $@ $<
 
-build_tests: ${TESTS_BIN}
+$(BUILD_DIR)/%.bin: $(BUILD_DIR)/%.elf
+	$(OBJCOPY) -O binary $< $@
 
-run_tests: ${RUN_TESTS}
+# Run a single test: load guest binary at 0xa0000000 (boot_guest entry),
+# then check output for PASS.
+$(BUILD_DIR)/%.pass: $(BUILD_DIR)/%.bin $(MINIVM)
+	@echo "  TEST $*"
+	@timeout 30 $(QEMU) -M virt -nographic \
+		-kernel $(MINIVM) \
+		-device "loader,addr=0xa0000000,file=$<" \
+		> $(BUILD_DIR)/$*.log 2>&1; \
+	if grep -q "PASS" $(BUILD_DIR)/$*.log; then \
+		echo "  PASS $*"; \
+		touch $@; \
+	else \
+		echo "  FAIL $* (see $(BUILD_DIR)/$*.log)"; \
+		exit 1; \
+	fi
 
-run-%: tests_bin/% minivm
-	qemu-system-hexagon \
-		-display none -M SA8775P_CDSP0 -kernel ./minivm ${QEMU_OPTS} \
-		-device loader,addr=${GUEST_ENTRY},file=$<
+ZEPHYR_BIN ?= tests_bin/zephyr.bin
 
-.PHONY: dbg install
-dbg: FORCE
-	lldb -o 'file ./minivm' -o 'target modules add ./vmlinux' -o 'target modules load -s 0 --file ./vmlinux' -o 'gdb-remote localhost:1234' ${LLDB_OPTS}
+zephyr-boot: minivm
+	timeout 30 $(QEMU) -M virt -nographic -m 4G \
+		-kernel $(MINIVM) \
+		-device "loader,addr=0xa0000000,file=$(ZEPHYR_BIN)"
 
-minivm.bin: minivm
-	${OBJCOPY} -O binary $< $@
-
-install: minivm minivm.bin $(TESTS_BIN)
-	 mkdir -p $(bindir)/
-	 install -D $^ $(bindir)/
-
-clean:
-	rm -rf tests_bin minivm minivm.bin ${OBJS}
-
-
+clean-guest-tests:
+	rm -rf $(BUILD_DIR)

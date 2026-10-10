@@ -1,0 +1,58 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: BSD-3-Clause-Clear
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/minivm-types",
+    "crates/minivm-arch",
+    "crates/minivm-sync",
+    "crates/minivm-mem",
+    "crates/minivm-intc",
+    "crates/minivm-sched",
+    "crates/minivm-vm",
+    "crates/minivm-trap",
+    "crates/minivm-event",
+    "crates/minivm-thread",
+    "crates/minivm-timer",
+    "crates/minivm-power",
+    "crates/minivm-init",
+    "crates/minivm-guest-tests",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "BSD-3-Clause-Clear"
+
+[package]
+name = "minivm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+run-tests = []
+debug-uart = []
+debug-circ = ["log_buffer"]
+
+[dependencies]
+minivm-init = { path = "crates/minivm-init" }
+minivm-intc = { path = "crates/minivm-intc" }
+minivm-mem = { path = "crates/minivm-mem" }
+minivm-sched = { path = "crates/minivm-sched" }
+minivm-thread = { path = "crates/minivm-thread" }
+minivm-timer = { path = "crates/minivm-timer" }
+minivm-types = { path = "crates/minivm-types" }
+minivm-vm = { path = "crates/minivm-vm" }
+fdt = { version = "0.1", default-features = false }
+log_buffer = { version = "1.2", default-features = false, optional = true }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+
+[profile.dev]
+panic = "abort"

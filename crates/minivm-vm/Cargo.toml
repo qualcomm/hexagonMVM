@@ -1,0 +1,19 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: BSD-3-Clause-Clear
+
+[package]
+name = "minivm-vm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+minivm-types = { path = "../minivm-types" }
+minivm-arch = { path = "../minivm-arch" }
+minivm-sync = { path = "../minivm-sync" }
+minivm-sched = { path = "../minivm-sched" }
+minivm-mem = { path = "../minivm-mem" }
+minivm-intc = { path = "../minivm-intc" }
+minivm-timer = { path = "../minivm-timer" }
+minivm-thread = { path = "../minivm-thread" }
+minivm-event = { path = "../minivm-event" }

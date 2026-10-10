@@ -1,0 +1,17 @@
+[build]
+target = "hexagon-unknown-none-elf"
+
+[target.hexagon-unknown-none-elf]
+linker = "hexagon-unknown-none-elf-ld.lld"
+rustflags = [
+    "-C", "target-cpu=hexagonv68",
+    "-C", "link-arg=-nostdlib",
+    "-C", "link-arg=-T", "-C", "link-arg=minivm.ld",
+    "-C", "link-arg=-e", "-C", "link-arg=_start",
+]
+
+# Note: build-std is required for the hexagon target but must NOT be active
+# when running host tests. To run tests:
+#   cargo test -p minivm-types --target x86_64-unknown-linux-gnu
+# To build for hexagon (default):
+#   cargo build -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem

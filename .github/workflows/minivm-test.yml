@@ -31,3 +31,22 @@ jobs:
             tar xf /tmp/clang+llvm-19.1.2-cross-hexagon-unknown-linux-musl.tar.xz
       - name: build
         run: make minivm CC=hexagon-unknown-none-elf-clang
+
+  miri:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v2
+      - name: Install Miri
+        run: |
+            rustup component add miri
+      - name: Run Miri tests
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation
+        run: |
+            cargo miri test \
+                -p minivm-types -p minivm-mem -p minivm-timer -p minivm-init \
+                -p minivm-power -p minivm-sched -p minivm-sync -p minivm-trap \
+                -p minivm-vm -p minivm-event -p minivm-arch -p minivm-intc \
+                -p minivm-thread \
+                --all-targets --target x86_64-unknown-linux-gnu

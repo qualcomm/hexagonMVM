@@ -1,0 +1,14 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: BSD-3-Clause-Clear
+
+[package]
+name = "minivm-guest-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+# No library code — this crate exists only for integration tests.
+path = "src/lib.rs"
+
+[dev-dependencies]
