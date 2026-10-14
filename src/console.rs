@@ -5,13 +5,22 @@
 
 //! The monitor's own console output.
 //!
-//! It goes through semihosting, which only works before the guest runs:
+//! When the device tree names a PL011, the monitor writes to its data
+//! register through a wired mapping, which works from any context. Without
+//! one it falls back to semihosting, which only works before the guest runs:
 //! `trap0` from inside an exception handler is a double exception.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+/// Virtual address of the PL011 data register, or 0.
+static UART: AtomicU32 = AtomicU32::new(0);
 /// Whether semihosting may still be used.
 static EARLY: AtomicBool = AtomicBool::new(true);
+
+/// Send output to the PL011 mapped at `va`.
+pub fn use_uart(va: u32) {
+    UART.store(va, Ordering::Relaxed);
+}
 
 /// The guest is about to run: no more semihosting.
 pub fn end_early() {
@@ -19,7 +28,12 @@ pub fn end_early() {
 }
 
 pub fn puts(s: &[u8]) {
-    if EARLY.load(Ordering::Relaxed) {
+    let uart = UART.load(Ordering::Relaxed);
+    if uart != 0 {
+        for &b in s {
+            unsafe { core::ptr::write_volatile(uart as *mut u32, b as u32) };
+        }
+    } else if EARLY.load(Ordering::Relaxed) {
         // write0 wants a terminated string.
         let mut buf = [0u8; 96];
         for chunk in s.chunks(buf.len() - 1) {

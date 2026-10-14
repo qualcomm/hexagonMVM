@@ -7,13 +7,15 @@
 //!
 //! It runs one guest that speaks the Hexagon Virtual Machine interface (the
 //! `trap1` calls of the HVM specification and the extensions the Linux
-//! port uses), with one virtual CPU per hardware thread.
+//! port uses), with one virtual CPU per hardware thread. That is what a
+//! Hexagon Linux kernel needs.
 //!
-//! The machine starts minivm as firmware and has already loaded the guest.
-//! [`entry.S`](../entry.S) gets each hardware thread to `minivm_main` or
-//! `minivm_secondary_main`; both return into `minivm_context_restore_rte`,
-//! which resumes whatever context SGP0 points at. From then on the monitor
-//! only runs in the exception handlers in `traps`.
+//! The machine starts minivm as firmware, with a device tree pointer in
+//! r1:r0, and has already loaded the guest. [`entry.S`](../entry.S) gets
+//! each hardware thread to `minivm_main` or `minivm_secondary_main`; both
+//! return into `minivm_context_restore_rte`, which resumes whatever context
+//! SGP0 points at. From then on the monitor only runs in the exception
+//! handlers in `traps`.
 
 #![no_std]
 #![no_main]
@@ -42,10 +44,12 @@ core::arch::global_asm!(include_str!("context.S"));
 
 const MINIVM_LINK_ADDR: u32 = 0xff00_0000;
 
-/// Where the guest is loaded and entered.
-const GUEST_ADDR: u32 = 0xa000_0000;
+/// Where a guest is expected when there is no device tree to say.
+const DEFAULT_GUEST_ADDR: u32 = 0xa000_0000;
 
+const SIZE_4K: u32 = 0;
 const SIZE_4M: u32 = 5;
+const PERM_R: u32 = 0x2;
 const PERM_RW: u32 = 0x6;
 const CACHE_DEVICE: u32 = 0x4;
 const CACHE_MEMORY: u32 = 0x7;
@@ -73,11 +77,142 @@ pub fn die() -> ! {
     mon::abandon(1);
 }
 
+/// What the device tree says that the monitor cares about.
+struct BootInfo {
+    /// Physical address of the device tree, to hand to the guest.
+    dtb: u32,
+    /// Physical address of a PL011 to print on.
+    uart: Option<u32>,
+    /// Where the guest image is loaded and entered: `/chosen/hvm,guest-entry`
+    /// if present, otherwise the start of the first `/memory` node.
+    guest_entry: Option<u32>,
+    /// A `/memory` range the guest would think it owns that holds part of
+    /// the monitor, with nothing in `/reserved-memory` or the memory
+    /// reservation block to keep it off.
+    monitor_exposed: Option<(u64, u64)>,
+}
+
+/// A property holding one address or size, of one or two cells.
+fn prop_u64(node: &fdt::node::FdtNode, name: &str) -> Option<u64> {
+    let v = node.property(name)?.value;
+    match v.len() {
+        4 => Some(u32::from_be_bytes(v.try_into().ok()?) as u64),
+        8 => Some(u64::from_be_bytes(v.try_into().ok()?)),
+        _ => None,
+    }
+}
+
+fn prop_u32(node: &fdt::node::FdtNode, name: &str) -> Option<u32> {
+    prop_u64(node, name).and_then(|v| u32::try_from(v).ok())
+}
+
+/// The ranges of a node's `reg`, as (start, end).
+fn reg_ranges<'b>(node: fdt::node::FdtNode<'b, '_>) -> impl Iterator<Item = (u64, u64)> + 'b {
+    node.reg().into_iter().flatten().filter_map(|r| {
+        let start = r.starting_address as usize as u64;
+        start
+            .checked_add(r.size.unwrap_or(0) as u64)
+            .map(|end| (start, end))
+    })
+}
+
+/// A `/memory` range overlapping `[lo, hi)`, unless something reserves
+/// all of `[lo, hi)`.
+fn find_exposed(fdt: &fdt::Fdt, lo: u64, hi: u64) -> Option<(u64, u64)> {
+    let covers = |(s, e): (u64, u64)| s <= lo && hi <= e;
+    let reserved_node = fdt
+        .find_node("/reserved-memory")
+        .into_iter()
+        .flat_map(|n| n.children())
+        .flat_map(reg_ranges)
+        .any(covers);
+    let reserved_block = fdt.memory_reservations().any(|r| {
+        let s = r.address() as usize as u64;
+        s.checked_add(r.size() as u64)
+            .is_some_and(|e| covers((s, e)))
+    });
+    if reserved_node || reserved_block {
+        return None;
+    }
+    fdt.all_nodes()
+        .filter(|n| n.name == "memory" || n.name.starts_with("memory@"))
+        .flat_map(reg_ranges)
+        .find(|&(s, e)| s < hi && lo < e)
+}
+
+/// Look at the device tree the machine passed, if it passed one.
+/// `monitor` is the physical range the monitor occupies.
+///
+/// The blob is mapped only for the duration of the call.
+fn read_fdt(fdt_phys: u64, monitor: (u64, u64)) -> BootInfo {
+    const WINDOW: u32 = 0x40_0000;
+    let mut info = BootInfo {
+        dtb: 0,
+        uart: None,
+        guest_entry: None,
+        monitor_exposed: None,
+    };
+
+    if fdt_phys == 0 || fdt_phys > u32::MAX as u64 || fdt_phys & 3 != 0 {
+        return info;
+    }
+    // 0xd00dfeed, stored big-endian.
+    if arch::phys_read32(fdt_phys) != 0xedfe_0dd0 {
+        return info;
+    }
+    let pa = fdt_phys as u32;
+    let size = u32::from_be(arch::phys_read32(fdt_phys + 4));
+    let base = pa & !(WINDOW - 1);
+    let offset = pa - base;
+    let Some(end) = offset.checked_add(size) else {
+        return info;
+    };
+    let Some(second_base) = base.checked_add(WINDOW) else {
+        return info;
+    };
+    if size < 40 || end > 2 * WINDOW {
+        return info;
+    }
+    info.dtb = pa;
+
+    unsafe {
+        arch::tlbw(
+            arch::tlb_entry(va::FDT, base, SIZE_4M, PERM_R, CACHE_MEMORY),
+            tlb::FDT0,
+        );
+        arch::tlbw(
+            arch::tlb_entry(va::FDT + WINDOW, second_base, SIZE_4M, PERM_R, CACHE_MEMORY),
+            tlb::FDT1,
+        );
+    }
+    let blob =
+        unsafe { core::slice::from_raw_parts((va::FDT + offset) as *const u8, size as usize) };
+    if let Ok(fdt) = fdt::Fdt::new(blob) {
+        let first_reg = |node: fdt::node::FdtNode| {
+            node.reg()
+                .and_then(|mut r| r.next())
+                .and_then(|r| u32::try_from(r.starting_address as u64).ok())
+        };
+        info.uart = fdt.find_compatible(&["arm,pl011"]).and_then(first_reg);
+        info.guest_entry = fdt
+            .find_node("/chosen")
+            .and_then(|c| prop_u32(&c, "hvm,guest-entry"))
+            .or_else(|| fdt.find_node("/memory").and_then(first_reg));
+        info.monitor_exposed = find_exposed(&fdt, monitor.0, monitor.1);
+    }
+    unsafe {
+        arch::tlbw(0, tlb::FDT0);
+        arch::tlbw(0, tlb::FDT1);
+    }
+    info
+}
+
 /// Boot thread entry, called from entry.S with the MMU on.
 ///
-/// `phys_base` is where the monitor image was loaded.
+/// `fdt_phys` is what the machine passed in r1:r0 and `phys_base` is where
+/// the monitor image was loaded.
 #[no_mangle]
-pub extern "C" fn minivm_main(_fdt_phys: u64, phys_base: u32) {
+pub extern "C" fn minivm_main(fdt_phys: u64, phys_base: u32) {
     extern "C" {
         static __image_end: u8;
     }
@@ -88,7 +223,17 @@ pub extern "C" fn minivm_main(_fdt_phys: u64, phys_base: u32) {
     let monitor = (phys_base as u64, phys_end as u64);
 
     let plat = discovery::discover();
+    let boot = read_fdt(fdt_phys, monitor);
 
+    if let Some(uart) = boot.uart {
+        unsafe {
+            arch::tlbw(
+                arch::tlb_entry(va::UART, uart & !0xfff, SIZE_4K, PERM_RW, CACHE_DEVICE),
+                tlb::UART,
+            );
+        }
+        console::use_uart(va::UART + (uart & 0xfff));
+    }
     console::puts(b"minivm: Hexagon VM (Rust)\n");
     console::field(b"  loaded at       ", phys_base);
     console::field(b"  core revision   ", plat.rev);
@@ -101,6 +246,18 @@ pub extern "C" fn minivm_main(_fdt_phys: u64, phys_base: u32) {
         fatal(
             b"unsupported core: this image targets the V68 family",
             plat.rev,
+            0,
+        );
+    }
+    if let Some((start, end)) = boot.monitor_exposed {
+        // The guest would take minivm's memory for its own. A
+        // /reserved-memory node covering the monitor keeps it off.
+        console::field(b"  monitor size    ", image_size);
+        console::field(b"  memory node     ", start as u32);
+        console::field(b"  memory node end ", end as u32);
+        fatal(
+            b"guest memory holds minivm; reserve it in /reserved-memory",
+            0,
             0,
         );
     }
@@ -144,7 +301,7 @@ pub extern "C" fn minivm_main(_fdt_phys: u64, phys_base: u32) {
     let hthreads = start_secondaries(plat.thread_mask);
     console::field(b"  hardware threads ", hthreads);
 
-    let entry = GUEST_ADDR;
+    let entry = boot.guest_entry.unwrap_or(DEFAULT_GUEST_ADDR);
     if (monitor.0..monitor.1).contains(&(entry as u64)) {
         fatal(b"guest entry is inside minivm", 0, entry);
     }
@@ -152,8 +309,10 @@ pub extern "C" fn minivm_main(_fdt_phys: u64, phys_base: u32) {
         fatal(b"no guest image at the load address", 0, entry);
     }
     console::field(b"  guest entry     ", entry);
+    console::field(b"  device tree     ", boot.dtb);
 
     let mut m = mon::lock();
+    m.hthreads = hthreads;
     // The guest starts at its load address under an identity map of all of
     // guest-physical memory, which is what Linux expects of its firmware:
     // head.S works out PHYS_OFFSET from where it finds itself running.
@@ -168,12 +327,13 @@ pub extern "C" fn minivm_main(_fdt_phys: u64, phys_base: u32) {
     ) else {
         fatal(b"no ASID for the guest", 0, 0);
     };
+    // Linux takes the device tree pointer in r0.
     m.create_vcpu(
         0,
         VcpuInit {
             pc: entry,
             sp: 0,
-            arg: 0,
+            arg: boot.dtb,
             asid,
             usr: THREAD_USR,
             ccr: THREAD_CCR,

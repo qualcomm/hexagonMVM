@@ -61,12 +61,17 @@ pub const FIRST_GUEST_TLB: u32 = 8;
 pub mod tlb {
     //! Wired TLB entries. Entry 0 is the monitor image, written by entry.S.
     pub const DEVICES: u32 = 1;
+    pub const UART: u32 = 2;
+    pub const FDT0: u32 = 3;
+    pub const FDT1: u32 = 4;
 }
 
 /// Monitor virtual addresses. The image takes the first megabyte at
 /// 0xff000000; everything else the monitor touches is wired above it.
 pub mod va {
+    pub const UART: u32 = 0xff10_0000;
     pub const DEVICES: u32 = 0xff40_0000;
+    pub const FDT: u32 = 0xff80_0000;
 }
 
 const GEVB_ERROR: u32 = 8;
@@ -220,6 +225,8 @@ pub struct Mon {
     percpu_mask: [[u32; SH_WORDS]; MAX_HT],
     /// Live virtual CPUs.
     pub num_cpus: u32,
+    /// Hardware threads that exist.
+    pub hthreads: u32,
     /// Hardware threads owed a wake-up interrupt.
     ipi_pending: u32,
     pub asids: AsidTable,
@@ -381,6 +388,7 @@ impl Mon {
             // Shared interrupts start locally disabled everywhere.
             percpu_mask: [[0; SH_WORDS]; MAX_HT],
             num_cpus: 0,
+            hthreads: 1,
             ipi_pending: 0,
             asids: AsidTable::new(),
             tlb_next: FIRST_GUEST_TLB,

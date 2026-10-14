@@ -6,6 +6,7 @@
 CLANG     ?= clang
 OBJCOPY   ?= llvm-objcopy
 QEMU      ?= qemu-system-hexagon
+PYTHON    ?= python3
 MINIVM    ?= target/hexagon-unknown-none-elf/release/minivm
 BUILD_DIR := target/guest-tests
 
@@ -24,7 +25,7 @@ GUEST_TESTS := first test_vmversion test_interrupts test_processors test_mmu
 GUEST_CFLAGS := --no-default-config --target=hexagon -mcpu=hexagonv73 -nostdlib \
 	-fuse-ld=lld -T tests/guest.ld
 
-.PHONY: minivm minivm-debug guest-tests clean-guest-tests
+.PHONY: minivm minivm-debug guest-tests linux-boot clean-guest-tests
 
 minivm:
 	$(CARGO_BUILD) --release
@@ -64,6 +65,15 @@ $(BUILD_DIR)/%.pass: $(BUILD_DIR)/%.bin $(MINIVM)
 		echo "  FAIL $* (status $$rc; see $(BUILD_DIR)/$*.log)"; \
 		exit 1; \
 	fi
+
+# Boot Linux on the QCS6490 CDSP machine with minivm as firmware, log in on
+# the console, check the CPU count and power off. KERNEL and INITRD are the
+# `vmlinux` and `initrd` of the Hexagon Linux howto.
+linux-boot: $(MINIVM)
+	@test -n "$(KERNEL)" -a -n "$(INITRD)" || \
+		{ echo "usage: make linux-boot KERNEL=vmlinux INITRD=initrd"; exit 2; }
+	$(PYTHON) tests/linux_boot.py --qemu $(QEMU) --minivm $(MINIVM) \
+		--kernel $(KERNEL) --initrd $(INITRD) $(LINUX_BOOT_ARGS)
 
 clean-guest-tests:
 	rm -rf $(BUILD_DIR)
