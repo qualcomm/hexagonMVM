@@ -18,7 +18,7 @@ ifneq ($(origin CC),default)
 export CARGO_TARGET_HEXAGON_UNKNOWN_NONE_ELF_LINKER := $(CC)
 endif
 
-GUEST_TESTS := first test_vmversion test_interrupts test_mmu
+GUEST_TESTS := first test_vmversion test_interrupts test_processors test_mmu
 # Guests bring their own startup code and linker script; newer CodeLinaro
 # toolchains ship a hexagon.cfg that would add picolibc's.
 GUEST_CFLAGS := --no-default-config --target=hexagon -mcpu=hexagonv73 -nostdlib \

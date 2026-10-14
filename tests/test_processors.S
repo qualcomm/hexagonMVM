@@ -79,7 +79,9 @@ _start:
 	// Save the vpid of the new processor
 	r11 = r0
 
-	vmwait
+	// The new processor runs on a hardware thread of its own. (Not vmwait:
+	// nothing here would ever post the interrupt to end the wait.)
+	vmyield
 
 	// Wait for other processor write its vpid
 	r1 = ##(stack1 + STACK_SIZE - 8)

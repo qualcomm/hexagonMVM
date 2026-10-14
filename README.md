@@ -9,10 +9,10 @@ Hexagon DSPs.
 
 ## Status
 
-minivm runs a guest on one virtual CPU, with interrupts and timeouts. The
-guest tests that need no more than that (the simple `trap1` calls, TLB
-management, interrupt delivery, user-mode exceptions) pass on QEMU's `virt`
-machine.
+minivm runs a guest with a virtual CPU on every hardware thread. The guest
+tests, which exercise individual VM operations (the `trap1` calls, TLB
+management, interrupt delivery, user-mode exceptions, several virtual
+processors), pass on QEMU's `virt` machine.
 
 ## How it works
 
@@ -21,19 +21,21 @@ minivm is linked at `0xff000000` and finds out at run time where it was
 loaded, so the same image runs wherever the machine has RAM for it (its ELF
 load address is `0x88f00000`, which suits the QCS6490 CDSP machine).
 
-A thread with nothing to run waits in an idle loop. The guest's interrupt
-enable is virtual: the core's own interrupts stay on whenever the guest
-runs, and device interrupts are posted to a virtual interrupt controller.
-One lock guards all monitor state.
+Each virtual CPU is pinned to one hardware thread for life. A thread with
+nothing to run waits in an idle loop. The guest's interrupt enable is
+virtual: the core's own interrupts stay on whenever the guest runs, and
+device interrupts are posted to a virtual interrupt controller. A thread
+that must notice something is sent core interrupt 0, which is steered to it
+with `iassignw`. One lock guards all monitor state.
 
 | File | Purpose |
 |------|---------|
-| `src/entry.S` | Vectors, startup, idle loop |
+| `src/entry.S` | Vectors, startup for the boot thread and the others, idle loop |
 | `src/context.S` | Register save and restore around every exception |
 | `src/main.rs` | Boot: discovery, starting the guest |
 | `src/mon.rs` | Virtual CPUs, virtual interrupt controller, what runs next |
 | `src/traps.rs` | The `trap1` interface, TLB fills, events forwarded to the guest |
-| `src/hwint.rs` | L2VIC, the QTIMER behind `vmtimerop` |
+| `src/hwint.rs` | L2VIC, the QTIMER behind `vmtimerop`, wake-up interrupts |
 | `src/console.rs` | The monitor's own output |
 
 The workspace crates under `crates/` hold logic with host-runnable unit

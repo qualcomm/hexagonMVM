@@ -15,7 +15,7 @@ use minivm_types::vm::{GSSR_IE, GSSR_UM, VM_VERSION};
 
 use crate::arch;
 use crate::hwint;
-use crate::mon::{self, Mon, State, FIRST_GUEST_TLB, MAX_HT};
+use crate::mon::{self, Mon, State, VcpuInit, FIRST_GUEST_TLB, MAX_HT};
 
 // Hardware exception causes that are reported to the guest under a
 // different code, or raised by the monitor itself.
@@ -135,6 +135,11 @@ fn trap1(m: &mut Mon, cpu: usize, trap: u32) {
         },
         // vmyield: every virtual CPU has a hardware thread to itself
         17 => m.cpus[cpu].set_r0(0),
+        // vmstart
+        18 => {
+            let ret = start(m, cpu, r0, r1);
+            m.cpus[cpu].set_r0(ret);
+        }
         // vmstop
         19 => stop(m, cpu, r0),
         // vmvpid
@@ -161,6 +166,44 @@ fn trap1(m: &mut Mon, cpu: usize, trap: u32) {
         // mode.
         _ => m.cpus[cpu].error_event(0, CAUSE_PRIVILEGE),
     }
+}
+
+/// `vmstart`: a new virtual CPU at `pc`, sharing the caller's address space
+/// and event vector. Returns its id, or -1.
+fn start(m: &mut Mon, me: usize, pc: u32, sp: u32) -> u32 {
+    if pc & 3 != 0 || sp & 7 != 0 {
+        return !0;
+    }
+    let Some(cpu) = m.free_cpu() else {
+        return !0;
+    };
+    let (ssr, usr, ccr, gevb) = {
+        let c = &m.cpus[me].ctx;
+        (c.ssr, (c.usrp30 >> 32) as u32, c.ccr, c.gevb)
+    };
+    // The new CPU holds its own reference to the address space.
+    let asid = Ssr::new(ssr).asid() as u32;
+    let e = *m.asids.get(asid);
+    let Some(ty) = TranslationType::from_raw(e.trans_type()) else {
+        return !0;
+    };
+    m.asids.inc(e.ptb, ty, false, e.extra(), e.vmid(), |_| {});
+    // Its extension enables start clear, so that first use faults to the
+    // guest.
+    m.create_vcpu(
+        cpu,
+        VcpuInit {
+            pc,
+            sp,
+            arg: 0,
+            asid,
+            usr,
+            ccr,
+            gevb,
+        },
+    );
+    m.wake(cpu);
+    Mon::vpid(cpu).0
 }
 
 /// `vmstop`: the calling virtual CPU is done. When the last one goes, so
