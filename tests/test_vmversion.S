@@ -13,10 +13,10 @@ _start:
 	r0 = ##GUEST_event_vectors
 	vmsetvec
 
-	// Request version 0xff, check that we get back 0x700
+	// Request version 0xff, check that we get back 0x800
 	r0 = #0xff
 	vmversion
-	{ p0 = cmp.eq(r0, #0x700); if (!p0.new) jump:nt _fail }
+	{ p0 = cmp.eq(r0, ##0x800); if (!p0.new) jump:nt _fail }
 
 	// Print the PASS message
 	r0 = #5

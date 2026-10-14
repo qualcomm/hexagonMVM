@@ -1,25 +1,91 @@
 
 # Hexagon minivm
 
-The hexagon minivm implements the
-[Hexagon Virtual Machine specification](https://docs.qualcomm.com/bundle/publicresource/80-NB419-3_REV_A_Hexagin_Virtual_Machine_Specification.pdf) ([mirror](https://archive.is/yzlri)).
-The Hexagon Virtual Machine is a hypervisor and portability layer.
+A Rust implementation of the
+[Hexagon Virtual Machine specification](https://docs.qualcomm.com/bundle/publicresource/80-NB419-3_REV_A_Hexagin_Virtual_Machine_Specification.pdf)
+([mirror](https://archive.is/yzlri)).
+The Hexagon VM is a type-1 hypervisor and portability layer for Qualcomm
+Hexagon DSPs.
 
 ## Status
 
-minivm can run some simple tests with `make test`:
+minivm runs a guest on one virtual CPU. The guest tests that need no more
+than that (the simple `trap1` calls, TLB management, user-mode exceptions)
+pass on QEMU's `virt` machine.
 
-- `first.S`: prints "Hello!" and exits.
-- `test_mmu.S`: has a user space that prints "Hello!" and tests some privilege
-  exceptions.
+## How it works
 
-You can attach the LLDB debugger as follows
+The machine starts minivm as firmware, with the guest already loaded.
+minivm is linked at `0xff000000` and finds out at run time where it was
+loaded, so the same image runs wherever the machine has RAM for it (its ELF
+load address is `0x88f00000`, which suits the QCS6490 CDSP machine).
 
-    $ make test QEMU_OPTS='-s -S'
+| File | Purpose |
+|------|---------|
+| `src/entry.S` | Vectors, startup |
+| `src/context.S` | Register save and restore around every exception |
+| `src/main.rs` | Boot: discovery, starting the guest |
+| `src/mon.rs` | Virtual CPUs, what runs next |
+| `src/traps.rs` | The `trap1` interface, TLB fills, events forwarded to the guest |
+| `src/console.rs` | The monitor's own output |
 
-And in another tab:
+The workspace crates under `crates/` hold logic with host-runnable unit
+tests. The monitor uses `minivm-types` (register layouts, constants) and
+`minivm-mem` (ASID table, guest page-table walks, TLB entry format), which
+shares the one hardware-TLB representation in `minivm-types`.
 
-    $ make dbg LLDB_OPTS="-o 'break set -a 0x20000000' -o c"
+## Building
+
+### Prerequisites
+
+- The Rust nightly pinned in `rust-toolchain.toml` (for `-Zbuild-std`)
+- `hexagon-unknown-none-elf-ld.lld` on `PATH` (from a Hexagon LLVM
+  toolchain), or `CC` set to a Hexagon clang for `make`
+
+```bash
+make minivm          # release build: target/hexagon-unknown-none-elf/release/minivm
+make minivm-debug    # debug build
+```
+
+## Testing
+
+### Guest tests
+
+Small guests, run with minivm as the `virt` machine's kernel. They need
+`clang` with the Hexagon target, `llvm-objcopy` and `qemu-system-hexagon`.
+The `tests/*.S` ones are assembly.
+
+```bash
+make guest-tests
+```
+
+A flat guest image is loaded at `0xa0000000` and entered there under an
+identity map:
+
+```bash
+qemu-system-hexagon -M virt -bios none -nographic \
+    -kernel ./minivm \
+    -device "loader,addr=0xa0000000,file=./guest.bin"
+```
+
+`-bios none` keeps QEMU from loading its bundled firmware. The machine
+needs RAM at minivm's load address, which the default 4G provides.
+
+### Host unit tests
+
+```bash
+cargo test --workspace --exclude minivm \
+    --target x86_64-unknown-linux-gnu
+```
+
+### Debugging
+
+Start QEMU with `-s -S` and attach LLDB:
+
+```bash
+lldb target/hexagon-unknown-none-elf/release/minivm -o 'gdb-remote localhost:1234'
+```
+
 ## License
 
-This project is [licensed](LICENSE) with the BSD 3-clause license.
+This project is [licensed](LICENSE) under the BSD 3-clause "Clear" license.

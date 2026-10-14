@@ -19,6 +19,8 @@
 #define HVM_TRANS_TYPE_LINEAR 0
 #define HVM_TRANS_TYPE_TABLE  1
 #define HVM_TRANS_TYPE_OFFSET 2
+/* r3 is the virtual page number width */
+#define HVM_TRANS_TYPE_VARADIX 3
 
 #define vmnewmap  trap1(#11)
 #define vmcache   trap1(#13)
