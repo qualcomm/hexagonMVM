@@ -17,9 +17,9 @@ with status 0.
 
 The guest tests, which exercise individual VM operations (the `trap1`
 calls, TLB management, interrupt delivery, user-mode exceptions, several
-virtual processors), pass on the `virt` machine and on hexagon-sim, the
-reference simulator, except that `test_mmu`'s result cannot be read on
-hexagon-sim (see `sim-guest-tests` below).
+virtual processors, timeouts), pass on the `virt` machine and on
+hexagon-sim, the reference simulator, except that `test_mmu`'s result cannot
+be read on hexagon-sim (see `sim-guest-tests` below).
 
 The QEMU results are checked against the QEMU of the 23.1.2 Hexagon
 toolchain release (tag `hexagon-sysemu-28-sept-2026` of
@@ -148,13 +148,28 @@ look for races.
 
 Small guests, run with minivm as the `virt` machine's kernel. They need
 `clang` with the Hexagon target, `llvm-objcopy` and `qemu-system-hexagon`.
-The `tests/*.S` ones are assembly.
+The `tests/*.S` ones are assembly. The `tests/hvm/*.c` ones are C, on a
+small runtime (`tests/hvm/crt.S`, `lib.c`) that turns events into calls to
+C, and check the interface operation by operation:
+
+| Test | Covers |
+|------|--------|
+| `hvm_funcs` | the simple `trap1` calls, events from kernel and user mode, `trap1` from user mode and unassigned `trap1` numbers |
+| `hvm_intop` | every `vmintop` operation, delivery as an event |
+| `hvm_smp` | `vmstart`/`vmstop` on every thread, interrupts between CPUs, shared interrupt routing, the timer |
+| `hvm_mmu` | every page size, `vmclrmap`, permission and user faults |
+| `hvm_varadix` | the same through variable-radix tables (`vmnewmap` type 3), every leaf size from 4K to 16M, and the maps `vmnewmap` refuses |
+| `hvm_timer` | a timeout on every CPU at once, 256 times each |
+
+On QEMU, `hvm_timer` sees wake-ups milliseconds late, from QEMU running
+the guest's CPUs on host time, so it only fails one later than a second;
+on hexagon-sim the latest is about 13us.
 
 ```bash
 make guest-tests
 ```
 
-or through cargo (missing tools are reported as errors):
+or the assembly ones through cargo (missing tools are reported as errors):
 
 ```bash
 cargo test -p minivm-guest-tests --target x86_64-unknown-linux-gnu
@@ -168,7 +183,8 @@ make sim-guest-tests
 ```
 
 hexagon-sim loads one ELF, so `scripts/add_segment.py` adds each guest to a
-copy of minivm as an extra segment. `test_mmu` is not among them: it prints
+copy of minivm as an extra segment. The simulator does not clear memory the
+ELF does not cover, which the C runtime clears itself. `test_mmu` is not among them: it prints
 PASS or FAIL from user mode, out of a page the simulator's semihosting cannot
 translate, so nothing shows which.
 
