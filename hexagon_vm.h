@@ -15,6 +15,11 @@
 #define vmgetie   trap1(#4)
 #define vmintop   trap1(#5)
 #define vmclrmap  trap1(#10)
+/* Translation types for vmnewmap's r1 argument */
+#define HVM_TRANS_TYPE_LINEAR 0
+#define HVM_TRANS_TYPE_TABLE  1
+#define HVM_TRANS_TYPE_OFFSET 2
+
 #define vmnewmap  trap1(#11)
 #define vmcache   trap1(#13)
 #define vmgettime trap1(#14)
@@ -48,7 +53,14 @@
 #define HVM_PTE_X_BIT        11
 
 #define HVM_EXCP_PROT_EX  0x11
-#define HVM_EXCP_PROT_UEX 0x14
+/*
+ * The VM spec lists 0x14 for "fetch from a page without user access" and
+ * leaves 0x12-0x13 reserved, but that is not what implementations report:
+ * the Hexagon core raises 0x12 (HEX_CAUSE_FETCH_NO_UPAGE) and the Linux
+ * port expects it (HVM_GE_C_XUSER in asm/hexagon_vm.h). The monitor
+ * forwards the hardware cause, so 0x12 is the value a guest sees.
+ */
+#define HVM_EXCP_PROT_UEX 0x12
 #define HVM_EXCP_PROT_RD  0x22
 #define HVM_EXCP_PROT_WR  0x23
 #define HVM_EXCP_PROT_URD 0x24
