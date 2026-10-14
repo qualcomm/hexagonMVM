@@ -20,6 +20,9 @@ export CARGO_TARGET_HEXAGON_UNKNOWN_NONE_ELF_LINKER := $(CC)
 endif
 
 GUEST_TESTS := first test_vmversion test_interrupts test_processors test_mmu
+# C guests that check the HVM interface operation by operation.
+HVM_TESTS := hvm_funcs hvm_intop hvm_smp hvm_mmu hvm_varadix hvm_timer
+HVM_RUNTIME := tests/hvm/crt.S tests/hvm/lib.c
 # Guests bring their own startup code and linker script; newer CodeLinaro
 # toolchains ship a hexagon.cfg that would add picolibc's.
 GUEST_CFLAGS := --no-default-config --target=hexagon -mcpu=hexagonv73 -nostdlib \
@@ -34,7 +37,7 @@ minivm:
 minivm-debug:
 	$(CARGO_BUILD)
 
-guest-tests: $(addprefix $(BUILD_DIR)/, $(addsuffix .pass, $(GUEST_TESTS)))
+guest-tests: $(addprefix $(BUILD_DIR)/, $(addsuffix .pass, $(GUEST_TESTS) $(HVM_TESTS)))
 	@echo "All guest tests passed."
 
 $(BUILD_DIR):
@@ -42,6 +45,10 @@ $(BUILD_DIR):
 
 $(BUILD_DIR)/%.elf: tests/%.S hexagon_vm.h tests/guest.ld | $(BUILD_DIR)
 	$(CLANG) $(GUEST_CFLAGS) -I. -o $@ $<
+
+$(BUILD_DIR)/%.elf: tests/hvm/%.c $(HVM_RUNTIME) tests/hvm/hvm.h tests/guest.ld | $(BUILD_DIR)
+	$(CLANG) $(GUEST_CFLAGS) -ffreestanding -fno-builtin -O1 -G0 \
+		-o $@ $(HVM_RUNTIME) $<
 
 $(BUILD_DIR)/%.bin: $(BUILD_DIR)/%.elf
 	$(OBJCOPY) -O binary $< $@
@@ -78,7 +85,8 @@ SIM_FLAGS     := -mv68 --simulated_returnval --v2p_translation 1 \
 	--subsystem_base 0xfe28 --cosim_file $(BUILD_DIR)/q6ss.cfg
 # Not test_mmu: it prints PASS or FAIL from user mode, out of a page the
 # simulator's semihosting cannot translate, so nothing shows which it was.
-SIM_GUEST_TESTS := first test_vmversion test_interrupts test_processors
+SIM_GUEST_TESTS := first test_vmversion test_interrupts test_processors \
+	$(HVM_TESTS)
 
 sim-guest-tests: $(addprefix $(BUILD_DIR)/, $(addsuffix .simpass, $(SIM_GUEST_TESTS)))
 	@echo "All guest tests passed on hexagon-sim."
