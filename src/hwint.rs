@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: BSD-3-Clause-Clear
  */
 
-//! Physical interrupts: the L2VIC and the QTIMER behind `vmtimerop`.
+//! Physical interrupts: the L2VIC, the QTIMER behind `vmtimerop`, and the
+//! inter-thread wake-up interrupts.
 //!
 //! Interrupt numbering: 0..31 are core interrupts and 32 + n is
 //! L2VIC line n. A device line is passed through to the guest under the same
@@ -11,7 +12,7 @@
 //! monitor.
 
 use crate::arch::{self, mmio_read, mmio_write};
-use crate::mon::{Mon, L2_CORE_INT, MAX_HT, PERCPU_INTS, TIME_GUESTINT};
+use crate::mon::{Mon, IPI_INT, L2_CORE_INT, MAX_HT, PERCPU_INTS, TIME_GUESTINT};
 
 // L2VIC registers. Each bitmap has one word per 32 lines.
 const L2VIC_VID: u32 = 0x000;
@@ -46,6 +47,8 @@ const TICK_GRANULARITY: u64 = 4;
 /// by `init` before any other thread runs.
 static mut L2VIC: u32 = 0;
 static mut QTIMER: u32 = 0;
+/// Lines currently enabled at the L2VIC. Guarded by the monitor lock.
+static mut ENABLED: [u32; (L2VIC_LINES / 32) as usize] = [0; (L2VIC_LINES / 32) as usize];
 
 fn l2vic(reg: u32, line: u32) -> u32 {
     unsafe { L2VIC + reg + (line / 32) * 4 }
@@ -79,14 +82,17 @@ pub unsafe fn init(l2vic_va: u32, qtimer_va: u32) {
     // The frame has to be enabled for a match to raise its line at all.
     mmio_write(qtimer_frame(QTF_CTL), 1);
 
+    ENABLED[(TIMER_LINE / 32) as usize] |= 1 << TIMER_LINE;
     mmio_write(l2vic(L2VIC_ENABLE_SET, TIMER_LINE), 1 << TIMER_LINE);
 }
 
-/// Per-thread interrupt setup: the boot thread takes the L2VIC's interrupt.
+/// Per-thread interrupt setup: the boot thread takes the L2VIC's interrupt,
+/// and no thread takes the wake-up interrupt until it is sent one.
 ///
 /// # Safety
 /// Must run on the thread being set up, in monitor mode.
 pub unsafe fn init_thread(cpu: usize) {
+    // The wake-up interrupt starts masked too: `Mon::kick` steers it.
     let accept = if cpu == 0 { 1u32 << L2_CORE_INT } else { 0 };
     arch::set_imask(!accept & 0xFFFF);
 }
@@ -205,7 +211,10 @@ impl Mon {
         // A device line stays off from here until the guest has handled the
         // interrupt and re-enables it (`guest_enabled`), so a level that is
         // still asserted does not interrupt again in between.
-        unsafe { mmio_write(l2vic(L2VIC_ENABLE_CLEAR, line), 1 << (line % 32)) };
+        unsafe {
+            ENABLED[(line / 32) as usize] &= !(1 << (line % 32));
+            mmio_write(l2vic(L2VIC_ENABLE_CLEAR, line), 1 << (line % 32));
+        }
         self.shint_post(me, 32 + line - PERCPU_INTS);
     }
 
@@ -213,13 +222,55 @@ impl Mon {
     ///
     /// `ciad` re-arms the core interrupts in `mask`, and `ciad` of the
     /// L2VIC's interrupt is also the controller's acknowledge: it forgets
-    /// the line it is presenting and moves on to the next. So that line is
-    /// serviced first.
+    /// the line it is presenting and moves on to the next.
+    ///
+    /// On hexagon-sim that is all. QEMU up to at least the 23.1.2
+    /// toolchain's acknowledges on every `ciad`, whatever its mask
+    /// (`standalone_systests/src/ciad_l2vic.c` in qemu-hexagon-testing
+    /// shows the difference; fixed by QEMU
+    /// commit "target/hexagon: acknowledge the l2vic only on ciad of a
+    /// taken l2vic interrupt"). There, a thread acknowledging its wake-up
+    /// interrupt can retire a device line nobody has looked at, and that
+    /// interrupt is gone for good.
+    ///
+    /// Hence the rule: whoever is about to `ciad` first services the line
+    /// the controller is presenting. While one is presented the controller
+    /// presents nothing else, so that much is race free. When none is, a
+    /// line could be presented between looking and the `ciad`; to close
+    /// that window every line is disabled around the `ciad`, which makes
+    /// the controller hold new arrivals as pending until they are enabled
+    /// again.
+    ///
+    /// The boot thread, which takes the L2VIC's own interrupt, can find the
+    /// line already serviced by another thread. That is fine. Where only
+    /// the L2VIC's `ciad` acknowledges, all of this is merely unnecessary.
     pub fn ack(&mut self, me: usize, mask: u32) {
         if let Some(line) = active_line() {
             self.service_line(me, line);
+            unsafe { arch::ciad(mask) };
+            return;
         }
-        unsafe { arch::ciad(mask) };
+        let enabled = unsafe { ENABLED };
+        unsafe {
+            for (word, &lines) in enabled.iter().enumerate() {
+                if lines != 0 {
+                    mmio_write(L2VIC + L2VIC_ENABLE_CLEAR + word as u32 * 4, lines);
+                }
+            }
+        }
+        if let Some(line) = active_line() {
+            self.service_line(me, line);
+        }
+        // Servicing a device line turns it off, so read the set again.
+        let enabled = unsafe { ENABLED };
+        unsafe {
+            arch::ciad(mask);
+            for (word, &lines) in enabled.iter().enumerate() {
+                if lines != 0 {
+                    mmio_write(L2VIC + L2VIC_ENABLE_SET + word as u32 * 4, lines);
+                }
+            }
+        }
     }
 }
 
@@ -248,11 +299,20 @@ pub fn guest_enabled(intno: u32) {
     }
     let line = intno - 32;
     if line < L2VIC_LINES && line != TIMER_LINE {
-        unsafe { mmio_write(l2vic(L2VIC_ENABLE_SET, line), 1 << (line % 32)) };
+        unsafe {
+            ENABLED[(line / 32) as usize] |= 1 << (line % 32);
+            mmio_write(l2vic(L2VIC_ENABLE_SET, line), 1 << (line % 32));
+        }
     }
 }
 
 /// Core interrupt entry.
 pub fn interrupt(m: &mut Mon, cpu: usize, core_int: u32) {
-    m.ack(cpu, 1 << core_int);
+    // A wake-up interrupt needs no more than acknowledging: the reason for
+    // it is in the state `Mon::leave` looks at.
+    if core_int == IPI_INT {
+        m.ipi_received(cpu);
+    } else {
+        m.ack(cpu, 1 << core_int);
+    }
 }

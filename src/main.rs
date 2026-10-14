@@ -7,13 +7,13 @@
 //!
 //! It runs one guest that speaks the Hexagon Virtual Machine interface (the
 //! `trap1` calls of the HVM specification and the extensions the Linux
-//! port uses), on one virtual CPU.
+//! port uses), with one virtual CPU per hardware thread.
 //!
 //! The machine starts minivm as firmware and has already loaded the guest.
-//! [`entry.S`](../entry.S) gets the boot thread to `minivm_main`, which
-//! returns into `minivm_context_restore_rte`, which resumes whatever context
-//! SGP0 points at. From then on the monitor only runs in the exception
-//! handlers in `traps`.
+//! [`entry.S`](../entry.S) gets each hardware thread to `minivm_main` or
+//! `minivm_secondary_main`; both return into `minivm_context_restore_rte`,
+//! which resumes whatever context SGP0 points at. From then on the monitor
+//! only runs in the exception handlers in `traps`.
 
 #![no_std]
 #![no_main]
@@ -33,7 +33,9 @@ use minivm_types::asid::TranslationType;
 use minivm_types::config::OffsetConfig;
 use minivm_types::regs::boot_defaults::{THREAD_CCR, THREAD_USR};
 
-use mon::{tlb, va, VcpuInit};
+use core::sync::atomic::{AtomicU32, Ordering};
+
+use mon::{tlb, va, VcpuInit, MAX_HT};
 
 core::arch::global_asm!(include_str!("entry.S"));
 core::arch::global_asm!(include_str!("context.S"));
@@ -136,7 +138,11 @@ pub extern "C" fn minivm_main(_fdt_phys: u64, phys_base: u32) {
             fatal(b"TLB size not reported by the platform", 0, plat.jtlb_entries);
         }
         m.tlb_size = plat.jtlb_entries;
+        m.cpus[0].started = true;
     }
+
+    let hthreads = start_secondaries(plat.thread_mask);
+    console::field(b"  hardware threads ", hthreads);
 
     let entry = GUEST_ADDR;
     if (monitor.0..monitor.1).contains(&(entry as u64)) {
@@ -177,4 +183,42 @@ pub extern "C" fn minivm_main(_fdt_phys: u64, phys_base: u32) {
     console::puts(b"minivm: starting guest\n");
     console::end_early();
     m.leave(0);
+}
+
+/// Hardware threads that have reached `minivm_secondary_main`, for the boot
+/// thread to watch without taking the monitor lock: a thread polling the
+/// lock in a loop can keep the others from ever getting it.
+static THREADS_UP: AtomicU32 = AtomicU32::new(1);
+
+/// How long to wait for the other hardware threads to come up.
+const THREAD_START_TIMEOUT_TICKS: u64 = hwint::TIMER_HZ / 10;
+
+/// Start the other hardware threads and wait for them to reach the idle
+/// loop. Returns the mask of threads that are running, this one included.
+fn start_secondaries(thread_mask: u32) -> u32 {
+    let want = thread_mask & ((1 << MAX_HT) - 1) & !1;
+    if want == 0 {
+        return 1;
+    }
+    unsafe { arch::start_threads(want) };
+    // MODECTL's enable bits show which of them actually exist.
+    let present = arch::modectl() & want;
+    let deadline = hwint::read_count() + THREAD_START_TIMEOUT_TICKS;
+    while THREADS_UP.load(Ordering::Acquire) & present != present && hwint::read_count() < deadline
+    {
+        core::hint::spin_loop();
+    }
+    THREADS_UP.load(Ordering::Acquire)
+}
+
+/// Entry for every hardware thread but the boot thread: go idle until a
+/// virtual CPU is started here.
+#[no_mangle]
+pub extern "C" fn minivm_secondary_main() {
+    let cpu = arch::htid();
+    unsafe { hwint::init_thread(cpu) };
+    let mut m = mon::lock();
+    m.cpus[cpu].started = true;
+    THREADS_UP.fetch_or(1 << cpu, Ordering::Release);
+    m.leave(cpu);
 }

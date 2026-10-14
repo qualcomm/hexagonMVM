@@ -9,9 +9,15 @@
  * The vector table is the first 32 words of the image: the core jumps to
  * EVB + 4*event, and events 16..31 are the sixteen core interrupts.
  *
- * The boot thread is entered by the machine at the image's physical
- * address with the MMU off and the FDT pointer in r1:r0. It wires the
- * monitor's mapping, turns the MMU on and continues at the link address.
+ * Every hardware thread arrives at the reset vector:
+ *
+ *   - The boot thread is entered by the machine at the image's physical
+ *     address with the MMU off and the FDT pointer in r1:r0. It wires the
+ *     monitor's mapping, turns the MMU on and continues at the link address.
+ *
+ *   - Every other thread is started later by `start`, which resets it to
+ *     EVB. By then EVB holds the link address and the MMU is on (SYSCFG is
+ *     shared by all threads), which is how the two cases are told apart.
  *
  * Wired TLB entries (see `tlb` in mon.rs for the rest):
  *   [0] the monitor image, 1M at MINIVM_LINK_ADDR
@@ -92,6 +98,10 @@ _start:
 	EVENT minivm_unexpected
 
 .Lreset:
+	r2 = syscfg
+	p0 = tstbit(r2, #0)
+	if (p0) jump .Lsecondary
+
 	/*
 	 * Boot thread: MMU off, running at the load address. Nothing below
 	 * may use an absolute address until the jump to .Lvirtual.
@@ -151,6 +161,11 @@ _start:
 	r1:0 = combine(r17, r16)
 	r2 = r18
 	call minivm_main
+	jump minivm_context_restore_rte
+
+.Lsecondary:
+	call .Lthread_setup
+	call minivm_secondary_main
 	jump minivm_context_restore_rte
 
 /*

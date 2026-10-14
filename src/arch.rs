@@ -31,6 +31,14 @@ pub fn syscfg() -> u32 {
     v
 }
 
+/// Hardware thread mode control: enable bits low, wait bits high.
+#[inline(always)]
+pub fn modectl() -> u32 {
+    let v: u32;
+    unsafe { asm!("{v} = modectl", v = out(reg) v, options(nomem, nostack)) };
+    v
+}
+
 /// # Safety
 /// Changes global core configuration.
 #[inline(always)]
@@ -57,6 +65,24 @@ pub unsafe fn set_imask(mask: u32) {
     asm!("imask = {v}", v = in(reg) mask, options(nomem, nostack));
 }
 
+/// Choose which hardware threads may take core interrupt `int` (0..15): a
+/// set bit in `masked` masks it for that thread. Writes every thread's
+/// IMASK bit for `int`.
+///
+/// # Safety
+/// Changes interrupt routing for every thread.
+#[inline(always)]
+pub unsafe fn iassignw(int: u32, masked: u32) {
+    let v = (int << 16) | (masked & 0xffff);
+    asm!("iassignw({v})", v = in(reg) v, options(nomem, nostack));
+}
+
+/// Raise core interrupts.
+#[inline(always)]
+pub fn swi(mask: u32) {
+    unsafe { asm!("swi({v})", v = in(reg) mask, options(nomem, nostack)) };
+}
+
 /// Clear core interrupts' auto-disable bits, making them deliverable again.
 ///
 /// For the L2VIC's interrupt this is also the controller's acknowledge: it
@@ -68,6 +94,15 @@ pub unsafe fn set_imask(mask: u32) {
 #[inline(always)]
 pub unsafe fn ciad(mask: u32) {
     asm!("ciad({v})", v = in(reg) mask, options(nomem, nostack));
+}
+
+/// Start hardware threads. They begin at the reset vector.
+///
+/// # Safety
+/// The reset path must be ready for them.
+#[inline(always)]
+pub unsafe fn start_threads(mask: u32) {
+    asm!("start({v})", v = in(reg) mask, options(nomem, nostack));
 }
 
 extern "C" {

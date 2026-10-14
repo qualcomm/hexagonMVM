@@ -49,6 +49,10 @@ pub const TIME_GUESTINT: u32 = 12;
 /// takes a zero id to mean "the caller".
 pub const VM_IDX: u8 = 2;
 
+/// Core interrupt that makes a hardware thread enter the monitor. There is
+/// one for all threads, steered with `iassignw` to the threads that have
+/// been sent it.
+pub const IPI_INT: u32 = 0;
 /// Core interrupt the L2VIC funnels its lines into.
 pub const L2_CORE_INT: u32 = 2;
 
@@ -88,6 +92,8 @@ pub struct Cpu {
     /// Context of the idle loop.
     pub idle: ThreadContext,
     pub state: State,
+    /// The hardware thread is up and has been through `secondary_main`.
+    pub started: bool,
     /// `vmtimerop` timeout in timer ticks; 0 is none.
     pub timeout: u64,
 }
@@ -98,6 +104,7 @@ impl Cpu {
             ctx: ThreadContext::zeroed(),
             idle: ThreadContext::zeroed(),
             state: State::Off,
+            started: false,
             timeout: 0,
         }
     }
@@ -213,6 +220,8 @@ pub struct Mon {
     percpu_mask: [[u32; SH_WORDS]; MAX_HT],
     /// Live virtual CPUs.
     pub num_cpus: u32,
+    /// Hardware threads owed a wake-up interrupt.
+    ipi_pending: u32,
     pub asids: AsidTable,
     pub tlb_next: u32,
     pub tlb_size: u32,
@@ -372,6 +381,7 @@ impl Mon {
             // Shared interrupts start locally disabled everywhere.
             percpu_mask: [[0; SH_WORDS]; MAX_HT],
             num_cpus: 0,
+            ipi_pending: 0,
             asids: AsidTable::new(),
             tlb_next: FIRST_GUEST_TLB,
             tlb_size: 0,
@@ -403,21 +413,53 @@ impl Mon {
         (id.vmidx() == VM_IDX && cpu < MAX_HT && self.cpus[cpu].state != State::Off).then_some(cpu)
     }
 
+    /// Make hardware thread `cpu` enter the monitor..
+    fn kick(&mut self, cpu: usize) {
+        if self.cpus[cpu].started {
+            self.ipi_pending |= 1 << cpu;
+            Self::steer_ipi(self.ipi_pending);
+            arch::swi(1 << IPI_INT);
+        }
+    }
+
+    /// Let exactly the threads in `threads` take the wake-up interrupt.
+    fn steer_ipi(threads: u32) {
+        unsafe { arch::iassignw(IPI_INT, !threads) };
+    }
+
+    /// Hardware thread `cpu` took the wake-up interrupt. Stop steering it
+    /// there, and raise it again if another thread is still owed one: it
+    /// is a single interrupt, and taking it auto-disabled it for everybody.
+    pub fn ipi_received(&mut self, cpu: usize) {
+        self.ipi_pending &= !(1 << cpu);
+        Self::steer_ipi(self.ipi_pending);
+        self.ack(cpu, 1 << IPI_INT);
+        if self.ipi_pending != 0 {
+            arch::swi(1 << IPI_INT);
+        }
+    }
+
     // ---- virtual interrupt controller ----
 
     /// Tell a virtual CPU it has an interrupt to look at. Returns false if
     /// there is no such CPU..
-    fn deliver(&mut self, _me: usize, target: usize, intno: u32) -> bool {
+    fn deliver(&mut self, me: usize, target: usize, intno: u32) -> bool {
         let t = &mut self.cpus[target];
         match t.state {
             State::Off => false,
             State::Waiting => {
                 t.state = State::Running;
                 t.set_r0(intno);
+                if target != me {
+                    self.kick(target);
+                }
                 true
             }
             State::Running => {
                 // The caller's own work is picked up on its way out.
+                if target != me && t.ie() {
+                    self.kick(target);
+                }
                 true
             }
         }
@@ -685,10 +727,26 @@ impl Mon {
         self.num_cpus += 1;
     }
 
+    /// Lowest hardware thread that is up and has no virtual CPU.
+    pub fn free_cpu(&self) -> Option<usize> {
+        (0..MAX_HT).find(|&i| self.cpus[i].started && self.cpus[i].state == State::Off)
+    }
+
     /// Start bringing the machine down: every hardware thread stops as soon
     /// as it next leaves the monitor.
-    pub fn begin_shutdown(&mut self, _me: usize, code: u32) {
+    pub fn begin_shutdown(&mut self, me: usize, code: u32) {
         self.shutdown = true;
         self.exit_code = code;
+        for cpu in 0..MAX_HT {
+            if cpu != me {
+                self.kick(cpu);
+            }
+        }
+    }
+
+    /// Wake a hardware thread so that it notices new state (a virtual CPU it
+    /// was just given).
+    pub fn wake(&mut self, cpu: usize) {
+        self.kick(cpu);
     }
 }
