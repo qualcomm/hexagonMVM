@@ -9,28 +9,49 @@ on:
 
 jobs:
   build_and_test:
+    # The toolchain's qemu-system-hexagon is built for Ubuntu 22.04.
     runs-on: ubuntu-22.04
+    timeout-minutes: 60
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v2
-      - name: Install dependencies
+        uses: actions/checkout@v4
+      - name: Install QEMU's runtime libraries
         run: |
-            sudo sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list
-            sudo apt update
-            sudo apt install make gcc qemu wget
-            sudo apt build-dep -yy qemu
-      - name: Set PATH
-        run: echo "PATH=${PATH}:/usr/local/bin:/opt/clang+llvm-19.1.2-cross-hexagon-unknown-linux-musl/x86_64-linux-gnu/bin" >> ${GITHUB_ENV}
-      - name: Download, Unpack Toolchain
-        env:
-          URL: https://artifacts.codelinaro.org/artifactory/codelinaro-toolchain-for-hexagon/19.1.2/clang+llvm-19.1.2-cross-hexagon-unknown-linux-musl.tar.xz
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends zstd \
+                libaio1 libasound2 libcurl3-gnutls libfdt1 libglib2.0-0 \
+                libibverbs1 libiscsi7 libjack-jackd2-0 libpixman-1-0 \
+                libpulse0 librdmacm1 libslirp0 libsndio7.0 libssh-4 \
+                liburing2 libfuse3-3
+      - name: Install Rust (the toolchain rust-toolchain.toml names)
+        run: rustup toolchain install
+      - name: Cache downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            .deps/*.tar.zst
+            .deps/vmlinux
+            .deps/initrd
+          key: deps-${{ hashFiles('scripts/fetch-deps.sh') }}
+      - name: Download toolchain, QEMU, Linux kernel and initramfs
+        run: make deps
+      - name: Check QEMU's libraries are all there
         run: |
-            cd /tmp
-            wget --quiet ${URL}
-            cd /opt
-            tar xf /tmp/clang+llvm-19.1.2-cross-hexagon-unknown-linux-musl.tar.xz
-      - name: build
-        run: make minivm CC=hexagon-unknown-none-elf-clang
+            if ldd .deps/clang+llvm-*/x86_64-ubuntu-22.04/bin/qemu-system-hexagon | grep 'not found'; then
+                exit 1
+            fi
+      # Unit tests, minivm, the guest tests on QEMU, and Linux booted
+      # twice to a shell and powered off.
+      - name: Test
+        run: make check
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs
+          path: |
+            target/guest-tests/*.log
+            target/linux-boot.log
 
   miri:
     runs-on: ubuntu-22.04

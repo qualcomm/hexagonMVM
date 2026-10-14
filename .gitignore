@@ -2,3 +2,4 @@
 minivm
 *.bin
 *.cpio
+/.deps

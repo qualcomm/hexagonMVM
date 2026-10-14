@@ -29,7 +29,7 @@ GUEST_CFLAGS := --no-default-config --target=hexagon -mcpu=hexagonv73 -nostdlib 
 	-fuse-ld=lld -T tests/guest.ld
 
 .PHONY: minivm minivm-debug guest-tests sim-guest-tests linux-boot \
-	clean-guest-tests
+	clean-guest-tests deps check unit-tests
 
 minivm:
 	$(CARGO_BUILD) --release
@@ -119,6 +119,32 @@ linux-boot: $(MINIVM)
 		{ echo "usage: make linux-boot KERNEL=vmlinux INITRD=initrd"; exit 2; }
 	$(PYTHON) tests/linux_boot.py --qemu $(QEMU) --minivm $(MINIVM) \
 		--kernel $(KERNEL) --initrd $(INITRD) $(LINUX_BOOT_ARGS)
+
+# Everything CI runs, using only prebuilt downloads (scripts/fetch-deps.sh):
+# the CodeLinaro toolchain supplies the linker, clang and QEMU, and the
+# howto's kernel and initramfs are booted. Needs curl, zstd, python3 and
+# the Rust toolchain from rust-toolchain.toml.
+DEPS     ?= .deps
+DEPS_BIN := $(abspath $(DEPS))/clang+llvm-23.1.2-cross-hexagon-unknown-linux-musl/x86_64-ubuntu-22.04/bin
+LINUX_BOOT_REPEAT ?= 2
+
+deps:
+	scripts/fetch-deps.sh $(DEPS)
+
+check: deps unit-tests
+	$(MAKE) clean-guest-tests
+	PATH="$(DEPS_BIN):$$PATH" $(MAKE) minivm
+	PATH="$(DEPS_BIN):$$PATH" $(MAKE) guest-tests \
+		CLANG=clang OBJCOPY=llvm-objcopy QEMU=qemu-system-hexagon
+	PATH="$(DEPS_BIN):$$PATH" $(MAKE) linux-boot QEMU=qemu-system-hexagon \
+		KERNEL=$(DEPS)/vmlinux INITRD=$(DEPS)/initrd \
+		LINUX_BOOT_ARGS="--repeat $(LINUX_BOOT_REPEAT) --log target/linux-boot.log"
+	@echo "All checks passed."
+
+# Host-side unit tests of the library crates.
+unit-tests:
+	cargo test --workspace --exclude minivm --exclude minivm-guest-tests \
+		--target x86_64-unknown-linux-gnu
 
 clean-guest-tests:
 	rm -rf $(BUILD_DIR)
