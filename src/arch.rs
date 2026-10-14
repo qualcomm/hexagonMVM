@@ -31,6 +31,13 @@ pub fn syscfg() -> u32 {
     v
 }
 
+/// # Safety
+/// Changes global core configuration.
+#[inline(always)]
+pub unsafe fn set_syscfg(v: u32) {
+    asm!("syscfg = {v}", "isync", v = in(reg) v, options(nomem, nostack));
+}
+
 /// Point this thread's exception entry at the context to save into, which
 /// is also the context `minivm_context_restore_rte` resumes.
 ///
@@ -39,6 +46,28 @@ pub fn syscfg() -> u32 {
 #[inline(always)]
 pub unsafe fn set_sgp0(ctx: u32) {
     asm!("sgp0 = {v}", v = in(reg) ctx, options(nomem, nostack));
+}
+
+/// Set which core interrupts this thread refuses (a set bit masks).
+///
+/// # Safety
+/// Changes interrupt routing for the calling thread.
+#[inline(always)]
+pub unsafe fn set_imask(mask: u32) {
+    asm!("imask = {v}", v = in(reg) mask, options(nomem, nostack));
+}
+
+/// Clear core interrupts' auto-disable bits, making them deliverable again.
+///
+/// For the L2VIC's interrupt this is also the controller's acknowledge: it
+/// retires the line being presented. QEMU does that for any mask. See
+/// `hwint::ack`.
+///
+/// # Safety
+/// The caller must have dealt with the line the L2VIC is presenting.
+#[inline(always)]
+pub unsafe fn ciad(mask: u32) {
+    asm!("ciad({v})", v = in(reg) mask, options(nomem, nostack));
 }
 
 extern "C" {
@@ -90,4 +119,31 @@ pub fn phys_read32(pa: u64) -> u32 {
         );
     }
     v
+}
+
+/// Build a raw hardware TLB entry (sentinel-PPD format).
+///
+/// `size` is the page-size code (0 = 4K, 1 = 16K, ... 4 = 1M, 5 = 4M,
+/// 6 = 16M); `va` and `pa` must be aligned to it. `xwru` is the permission
+/// nibble and `cccc` the cache attribute.
+pub const fn tlb_entry(va: u32, pa: u32, size: u32, xwru: u32, cccc: u32) -> u64 {
+    minivm_types::tlb::TlbEntry::global_mapping(va, pa, size as u8, xwru as u8, cccc as u8).0
+}
+
+/// MMIO read.
+///
+/// # Safety
+/// `addr` must be a mapped device register.
+#[inline(always)]
+pub unsafe fn mmio_read(addr: u32) -> u32 {
+    core::ptr::read_volatile(addr as *const u32)
+}
+
+/// MMIO write.
+///
+/// # Safety
+/// `addr` must be a mapped device register.
+#[inline(always)]
+pub unsafe fn mmio_write(addr: u32, val: u32) {
+    core::ptr::write_volatile(addr as *mut u32, val);
 }

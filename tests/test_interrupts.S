@@ -78,51 +78,47 @@ _start:
 	vmintop
 	{ p0 = cmp.eq(r0, #0); if (!p0.new) jump:nt _fail }
 
-	// Status should be global:1/local:0/pend:1 (5)
+	// Posting only makes it pending: global:0/local:0/pend:1 (1). Per-CPU
+	// interrupts have no local enable.
 	r0 = #HVM_INTOP_STATUS
 	r1 = #13
 	vmintop
-	{ p0 = cmp.eq(r0, #5); if (!p0.new) jump:nt _fail }
+	{ p0 = cmp.eq(r0, #1); if (!p0.new) jump:nt _fail }
 
-	// Check that it's the next one
+	// Nothing is enabled, so nothing is next
 	r0 = #HVM_INTOP_PEEK
 	vmintop
-	{ p0 = cmp.eq(r0, #13); if (!p0.new) jump:nt _fail }
+	{ p0 = cmp.eq(r0, #-1); if (!p0.new) jump:nt _fail }
 
 	// Check not taken yet
 	r0 = memw(##(interrupt_counts + 13*4))
 	{ p0 = cmp.eq(r0, #0); if (!p0.new) jump:nt _fail }
 
-	// Enable it locally
-	r0 = #HVM_INTOP_LOCEN
+	// Enable it, which delivers it
+	r0 = #HVM_INTOP_GLOBEN
 	r1 = #13
 	vmintop
-
-	// Status should be global:1/local:1/pend:0 (6)
-	r0 = #HVM_INTOP_STATUS
-	r1 = #13
-	vmintop
-	{ p0 = cmp.eq(r0, #6); if (!p0.new) jump:nt _fail }
-
-	// Check that 15 is next
-	r0 = #HVM_INTOP_PEEK
-	vmintop
-	{ p0 = cmp.eq(r0, #15); if (!p0.new) jump:nt _fail }
+	{ p0 = cmp.eq(r0, #0); if (!p0.new) jump:nt _fail }
 
 	// Check that it was taken
 	r0 = memw(##(interrupt_counts + 13*4))
 	{ p0 = cmp.eq(r0, #1); if (!p0.new) jump:nt _fail }
 
-	// Disable it locally
-	r0 = #HVM_INTOP_LOCDIS
-	r1 = #13
-	vmintop
-
-	// Status should be global:1/local:0/pend:0 (4)
+	// The handler enabled it again: global:1/local:0/pend:0 (4)
 	r0 = #HVM_INTOP_STATUS
 	r1 = #13
 	vmintop
 	{ p0 = cmp.eq(r0, #4); if (!p0.new) jump:nt _fail }
+
+	// 15 is pending but not enabled, so still nothing is next
+	r0 = #HVM_INTOP_PEEK
+	vmintop
+	{ p0 = cmp.eq(r0, #-1); if (!p0.new) jump:nt _fail }
+
+	// Disable it
+	r0 = #HVM_INTOP_GLOBDIS
+	r1 = #13
+	vmintop
 
 	// Post interrupt 13
 	r0 = #HVM_INTOP_POST
@@ -135,8 +131,14 @@ _start:
 	r0 = memw(##(interrupt_counts + 13*4))
 	{ p0 = cmp.eq(r0, #1); if (!p0.new) jump:nt _fail }
 
-	// Enable it locally
-	r0 = #HVM_INTOP_LOCEN
+	// Status should be global:0/local:0/pend:1 (1)
+	r0 = #HVM_INTOP_STATUS
+	r1 = #13
+	vmintop
+	{ p0 = cmp.eq(r0, #1); if (!p0.new) jump:nt _fail }
+
+	// Enable it again
+	r0 = #HVM_INTOP_GLOBEN
 	r1 = #13
 	vmintop
 
@@ -148,7 +150,13 @@ _start:
 	r0 = #HVM_INTOP_CLEAR
 	r1 = #15
 	vmintop
-	{ p0 = cmp.eq(r0, #1); if (!p0.new) jump:nt _fail }
+	{ p0 = cmp.eq(r0, #0); if (!p0.new) jump:nt _fail }
+
+	// Status should be global:0/local:0/pend:0 (0)
+	r0 = #HVM_INTOP_STATUS
+	r1 = #15
+	vmintop
+	{ p0 = cmp.eq(r0, #0); if (!p0.new) jump:nt _fail }
 
 	// Check that none are left
 	r0 = #HVM_INTOP_PEEK
