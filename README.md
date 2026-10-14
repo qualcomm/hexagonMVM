@@ -132,6 +132,23 @@ qemu-system-hexagon -M qcs6490-cdsp -L $PWD/fw -dtb qcs6490-cdsp.dtb \
 
 ## Testing
 
+### Everything, from prebuilt downloads
+
+```bash
+make check
+```
+
+runs what CI runs (`.github/workflows/minivm-test.yml`) with nothing built
+but minivm: `scripts/fetch-deps.sh` downloads the CodeLinaro Hexagon
+toolchain (cross linker, clang, and the `qemu-system-hexagon` the howto
+uses) and the howto's kernel and initramfs into `.deps`, checking each
+against a pinned SHA-256. Then come the host unit tests, the guest tests
+and two Linux boots (`LINUX_BOOT_REPEAT`). It needs `curl`, `zstd`,
+`python3` and rustup; the QEMU binary is built for Ubuntu 22.04 and wants
+the shared libraries the workflow installs. `make deps` only downloads.
+`make check` removes prior guest-test result stamps before running, so changing
+QEMU or its flags cannot silently reuse an older pass.
+
 ### Linux boot test
 
 Boots Linux as above, checks the CPU count from the shell, runs a loop of
