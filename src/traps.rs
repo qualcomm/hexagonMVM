@@ -162,6 +162,11 @@ fn trap1(m: &mut Mon, cpu: usize, trap: u32) {
         }
         // vmpmuconfig
         25 => m.cpus[cpu].set_r0(0),
+        // vmgetinfo
+        26 => {
+            let v = info(m, r0);
+            m.cpus[cpu].set_r0(v);
+        }
         // Not a virtual instruction: an error event, as for one from user
         // mode.
         _ => m.cpus[cpu].error_event(0, CAUSE_PRIVILEGE),
@@ -274,6 +279,87 @@ fn clrmap(m: &mut Mon, cpu: usize, va: u32, bytes: u32) {
     }
 }
 
+/// `vmgetinfo`. The codes are those of `minivm_types::info::InfoType`.
+fn info(m: &Mon, code: u32) -> u32 {
+    let p = &m.plat;
+    match code {
+        0 => 0, // build id
+        1 => {
+            minivm_types::info::BootFlags(0)
+                .with_have_hvx(p.coproc_present != 0)
+                .0
+        }
+        2 => 0, // STLB: none
+        3 => arch::syscfg(),
+        4 => 0, // livelock
+        5 => p.rev,
+        6 => p.ss_base,
+        7 => m.tlb_size - FIRST_GUEST_TLB,
+        8 => m.tlb_size,
+        9 => m.phys_base,
+        10 => p.l2tcm_base,
+        11 | 12 => 0,    // L2 array size, TCM size
+        13 => 0x10_0000, // the monitor is one 1M page
+        14 => 1,
+        15 => p.l2vic_base,
+        16 => p.qtimer_base,
+        17 => hwint::TIMER_INT,
+        18 => 0, // no kernel error
+        19 => m.hthreads,
+        20..=22 => 0,
+        23 => p.cfg_base >> 16,
+        24 => {
+            if p.coproc_present != 0 {
+                1 << p.hvx_vec_log_length
+            } else {
+                0
+            }
+        }
+        25 | 34 => p.ext_contexts,
+        26 => 0, // the guest switches HVX context itself
+        27 => p.vtcm_base,
+        28 => p.vtcm_size_kb,
+        29 => 0,
+        30 => p.l2line_size,
+        31..=45 => 0,
+        _ => !0,
+    }
+}
+
+/// `trap0(#31)`, the hardware configuration call the Linux port makes.
+fn hwconfig(m: &mut Mon, cpu: usize) -> u32 {
+    const EXTBITS: u32 = 3;
+    const VLENGTH: u32 = 4;
+    const SYSCFG_V2X: u32 = 1 << 7;
+
+    let c = &mut m.cpus[cpu];
+    let (op, a, b) = (c.r(0), c.r(2), c.r(3));
+    match op {
+        // Coprocessor enable (XE) and which extension context (XA) this
+        // virtual CPU uses.
+        EXTBITS => {
+            let ssr = c.ctx.ssr & !(Ssr::XA_MASK | (1 << Ssr::XE_BIT));
+            c.ctx.ssr = ssr | ((a << Ssr::XA_SHIFT) & Ssr::XA_MASK) | ((b & 1) << Ssr::XE_BIT);
+            0
+        }
+        // Vector length, as log2 bytes: anything above the native length
+        // selects double-length vectors.
+        VLENGTH => {
+            let cur = arch::syscfg();
+            let new = if a > m.plat.hvx_vec_log_length {
+                cur | SYSCFG_V2X
+            } else {
+                cur & !SYSCFG_V2X
+            };
+            if new != cur {
+                unsafe { arch::set_syscfg(new) };
+            }
+            0
+        }
+        _ => !0,
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn minivm_trap0(ctx: *mut ThreadContext) {
     let cpu = arch::htid();
@@ -284,7 +370,10 @@ pub extern "C" fn minivm_trap0(ctx: *mut ThreadContext) {
     }
     let mut m = mon::lock();
     let trapno = m.cpus[cpu].ctx.ssr & 0xff;
-    if trapno == 0 && m.cpus[cpu].ctx.gevb == 0 {
+    if trapno == 31 && m.cpus[cpu].guest_kernel() {
+        let ret = hwconfig(&mut m, cpu);
+        m.cpus[cpu].set_r0(ret);
+    } else if trapno == 0 && m.cpus[cpu].ctx.gevb == 0 {
         // Semihosting from a guest too simple to have an event vector.
     } else {
         m.cpus[cpu].trap0_event(trapno);

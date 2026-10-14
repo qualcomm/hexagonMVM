@@ -26,6 +26,8 @@ const L2VIC_LINES: u32 = 256;
 
 /// L2VIC line of the QTIMER frame the monitor uses.
 const TIMER_LINE: u32 = 2;
+/// Its physical interrupt number, as `vmgetinfo` reports it.
+pub const TIMER_INT: u32 = 32 + TIMER_LINE;
 
 // QTIMER: a control block, then one frame per timer.
 const QT_CNTFRQ: u32 = 0x000;
