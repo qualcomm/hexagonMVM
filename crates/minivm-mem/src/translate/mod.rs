@@ -12,6 +12,8 @@
 
 pub mod linear;
 pub mod offset;
+pub mod table;
+pub mod varadix;
 
 use minivm_types::asid::{AsidEntry, TranslationType};
 use minivm_types::translate::Translation;
@@ -55,12 +57,25 @@ pub trait TranslateCtx {
     fn physread_dword(&self, pa: u64) -> u64;
 }
 
+/// Read a 32-bit word from physical memory through the context's
+/// 64-bit physical read.
+pub(crate) fn physread_word(ctx: &dyn TranslateCtx, pa: u64) -> u32 {
+    let dword = ctx.physread_dword(pa & !7);
+    if pa & 4 == 0 {
+        dword as u32
+    } else {
+        (dword >> 32) as u32
+    }
+}
+
 /// Dispatch translation based on the ASID entry's translation type.
 pub fn translate(ctx: &dyn TranslateCtx, input: Translation, info: AsidEntry) -> Translation {
     match TranslationType::from_raw(info.trans_type()) {
         Some(TranslationType::Offset) => offset::offset_translate(ctx, input, info),
         Some(TranslationType::Linear) => linear::linear_translate(ctx, input, info),
-        _ => Translation::BAD,
+        Some(TranslationType::Table) => table::table_translate(ctx, input, info),
+        Some(TranslationType::Varadix) => varadix::varadix_translate(ctx, input, info),
+        None => Translation::BAD,
     }
 }
 
