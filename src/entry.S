@@ -26,6 +26,7 @@
  */
 
 	.equ BOOT_STACK_SIZE, 16384
+	.equ SYSCFG_ID, 0x6		/* L1 instruction and data caches */
 	.equ MAX_HTHREADS, 8
 
 	.section .bss
@@ -113,6 +114,40 @@ _start:
 	   set, and the boot path traps (semihosting). */
 	r2 = #0
 	ssr = r2
+	isync
+
+	/*
+	 * Preserve each cache the loader left on, because it may hold the
+	 * loader's writes. Invalidate each one it left off before enabling or
+	 * sizing it; its contents are undefined. Handle the caches independently:
+	 * loaders need not leave them in the same state.
+	 */
+	r2 = syscfg
+	p0 = tstbit(r2, #1)		/* I */
+	if (p0) jump .Licache_done
+	jump .Licache_kill
+	.p2align 5
+.Licache_kill:
+	ickill
+	r2 = setbit(r2, #1)
+.Licache_done:
+	p0 = tstbit(r2, #2)		/* D */
+	if (p0) jump .Ldcache_done
+	jump .Ldcache_kill
+	.p2align 5
+.Ldcache_kill:
+	dckill
+	r2 = setbit(r2, #2)
+.Ldcache_done:
+	r3 = extractu(r2, #3, #16)	/* L2CFG */
+	p0 = cmp.eq(r3, #0)
+	if (!p0) jump .Ll2cache_done
+	jump .Ll2cache_kill
+	.p2align 5
+.Ll2cache_kill:
+	l2kill
+.Ll2cache_done:
+	syscfg = r2
 	isync
 
 	/* [0]: link address -> load address, 1M, RWX, global, cached. */

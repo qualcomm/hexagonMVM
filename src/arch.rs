@@ -65,6 +65,58 @@ pub unsafe fn set_imask(mask: u32) {
     asm!("imask = {v}", v = in(reg) mask, options(nomem, nostack));
 }
 
+/// SYSCFG.L2GCA: a global L2 operation is still running.
+pub const SYSCFG_L2GCA: u32 = 1 << 31;
+
+/// Wait for outstanding memory transactions.
+#[inline(always)]
+pub fn syncht() {
+    unsafe { asm!("syncht", options(nostack)) };
+}
+
+/// Invalidate the whole L1 instruction cache.
+#[inline(always)]
+pub fn ickill() {
+    unsafe { asm!("ickill", "isync", options(nostack)) };
+}
+
+/// Invalidate the whole L2, discarding dirty lines.
+///
+/// # Safety
+/// Loses whatever the L2 holds that memory does not.
+#[inline(always)]
+pub unsafe fn l2kill() {
+    asm!("l2kill", "isync", options(nostack));
+}
+
+/// Start cleaning and invalidating the whole L2. It completes when
+/// SYSCFG.L2GCA reads clear.
+///
+/// # Safety
+/// Changes cache state for every thread.
+#[inline(always)]
+pub unsafe fn l2gcleaninv() {
+    asm!("l2gcleaninv", options(nostack));
+}
+
+/// Clean and invalidate one L1 data cache line, by set and way.
+///
+/// # Safety
+/// Changes cache state.
+#[inline(always)]
+pub unsafe fn dccleaninvidx(idx: u32) {
+    asm!("dccleaninvidx({i})", i = in(reg) idx, options(nostack));
+}
+
+/// Clean one L1 data cache line, by set and way.
+///
+/// # Safety
+/// Changes cache state.
+#[inline(always)]
+pub unsafe fn dccleanidx(idx: u32) {
+    asm!("dccleanidx({i})", i = in(reg) idx, options(nostack));
+}
+
 /// Choose which hardware threads may take core interrupt `int` (0..15): a
 /// set bit in `masked` masks it for that thread. Writes every thread's
 /// IMASK bit for `int`.

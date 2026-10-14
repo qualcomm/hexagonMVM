@@ -28,9 +28,11 @@ mod cfg {
     pub const EXT_CONTEXTS: u32 = 0x34;
     pub const VTCM_BASE: u32 = 0x38;
     pub const VTCM_SIZE_KB: u32 = 0x3c;
+    pub const L2TAG_SIZE: u32 = 0x40;
     pub const THREAD_ENABLE_MASK: u32 = 0x48;
     pub const L2LINE_SIZE: u32 = 0x50;
     pub const HVX_VEC_LOG_LENGTH: u32 = 0x6c;
+    pub const L1D_SIZE_KB: u32 = 0xa4;
     /// Config table base addresses store bits [35:16].
     pub const ADDR_SHIFT: u32 = 16;
 }
@@ -72,6 +74,10 @@ pub struct Platform {
     pub hvx_vec_log_length: u32,
     /// L2 cache line size in bytes.
     pub l2line_size: u32,
+    /// L2 tag array size, which fixes how much of the L2 can be cache.
+    pub l2tag_size: u32,
+    /// L1 data cache size in KiB (0 if the table predates the entry).
+    pub l1d_size_kb: u32,
 }
 
 impl Platform {
@@ -92,6 +98,8 @@ impl Platform {
             ext_contexts: 0,
             hvx_vec_log_length: 0,
             l2line_size: 0,
+            l2tag_size: 0,
+            l1d_size_kb: 0,
         }
     }
 }
@@ -154,6 +162,8 @@ pub fn discover() -> Platform {
     p.ext_contexts = cfg_word(p.cfg_base, cfg::EXT_CONTEXTS);
     p.hvx_vec_log_length = cfg_word(p.cfg_base, cfg::HVX_VEC_LOG_LENGTH);
     p.l2line_size = cfg_word(p.cfg_base, cfg::L2LINE_SIZE);
+    p.l2tag_size = cfg_word(p.cfg_base, cfg::L2TAG_SIZE);
+    p.l1d_size_kb = cfg_word(p.cfg_base, cfg::L1D_SIZE_KB);
 
     p
 }

@@ -36,8 +36,7 @@ What it does not do:
 - **No single-stepping** of the guest (`GSSR.SS` is ignored), and the PMU
   calls are accepted and ignored.
 - **Real hardware is untested.** It has run on QEMU only.
-- **The caches are left as the loader set them up**, and the guest's
-  `vmcache` requests are ignored.
+  The L2 QoS and ECC registers are left as they are.
 
 ## How it works
 
@@ -54,6 +53,12 @@ device interrupts are posted to a virtual interrupt controller. A thread
 that must notice something is sent core interrupt 0, which is steered to it
 with `iassignw`. One lock guards all monitor state.
 
+At reset minivm invalidates the caches and turns the L1 caches on, unless
+the loader left them on, in which case they may hold its writes and are
+left alone. It then sizes the L2 from the config table and makes it
+write-back. The guest's `vmcache` requests are carried out on
+whole caches.
+
 ### What it takes from the device tree
 
 Everything else about the platform comes from the core's config table, so
@@ -63,6 +68,8 @@ the device tree only has to say what that cannot:
 |-------|------|
 | `/chosen/hvm,guest-entry` | Physical address the guest image is loaded and entered at. Without it, the start of the first `/memory` node; without a device tree, `0xa0000000`. |
 | `/reserved-memory`, or a memory reservation | Must cover minivm's own image if any `/memory` node does, or minivm stops: the guest would take that memory for its own. |
+| `/cpus/cpu@0`: `d-cache-size`, `d-cache-line-size`, `d-cache-sets` | L1 data cache geometry, which the by-index cache operations need. Without them, a default geometry (8 ways, 32-byte index steps), grown to the size the config table gives. |
+| `next-level-cache` of `/cpus/cpu@0`: `cache-size` | L2 size, used only when the config table does not give one. |
 | A node compatible with `arm,pl011` | The monitor's console. Without one, semihosting, until the guest starts. |
 
 The device tree itself is passed to the guest in r0, unchanged.
@@ -75,6 +82,7 @@ The device tree itself is passed to the guest in r0, unchanged.
 | `src/mon.rs` | Virtual CPUs, virtual interrupt controller, what runs next |
 | `src/traps.rs` | The `trap1` interface, TLB fills, events forwarded to the guest |
 | `src/hwint.rs` | L2VIC, the QTIMER behind `vmtimerop`, wake-up interrupts |
+| `src/cache.rs` | Cache sizing at boot and the guest's `vmcache` requests |
 | `src/console.rs` | The monitor's own output |
 
 The workspace crates under `crates/` hold logic with host-runnable unit
