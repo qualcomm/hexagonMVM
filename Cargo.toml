@@ -5,6 +5,7 @@
 resolver = "2"
 members = [
     "crates/minivm-types",
+    "crates/minivm-mem",
 ]
 
 [workspace.package]
