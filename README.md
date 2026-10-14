@@ -17,11 +17,14 @@ with status 0.
 
 The guest tests, which exercise individual VM operations (the `trap1`
 calls, TLB management, interrupt delivery, user-mode exceptions, several
-virtual processors), pass on the `virt` machine.
+virtual processors), pass on the `virt` machine and on hexagon-sim, the
+reference simulator, except that `test_mmu`'s result cannot be read on
+hexagon-sim (see `sim-guest-tests` below).
 
 The QEMU results are checked against the QEMU of the 23.1.2 Hexagon
 toolchain release (tag `hexagon-sysemu-28-sept-2026` of
-<https://github.com/qualcomm/qemu>).
+<https://github.com/qualcomm/qemu>), and hexagon-sim is the one in Hexagon
+SDK 6.4.0.2 (tools 19.0.04).
 
 What it does not do:
 
@@ -35,7 +38,7 @@ What it does not do:
   size are validated against the core revision at boot.
 - **No single-stepping** of the guest (`GSSR.SS` is ignored), and the PMU
   calls are accepted and ignored.
-- **Real hardware is untested.** It has run on QEMU only.
+- **Real hardware is untested.** It has run on QEMU and hexagon-sim only.
   The L2 QoS and ECC registers are left as they are.
 
 ## How it works
@@ -156,6 +159,18 @@ or through cargo (missing tools are reported as errors):
 ```bash
 cargo test -p minivm-guest-tests --target x86_64-unknown-linux-gnu
 ```
+
+The same tests run on hexagon-sim from a Hexagon SDK (set `HEXAGON_TOOLS`
+to its `Tools` directory):
+
+```bash
+make sim-guest-tests
+```
+
+hexagon-sim loads one ELF, so `scripts/add_segment.py` adds each guest to a
+copy of minivm as an extra segment. `test_mmu` is not among them: it prints
+PASS or FAIL from user mode, out of a page the simulator's semihosting cannot
+translate, so nothing shows which.
 
 A flat guest image is loaded at `0xa0000000` and entered there under an
 identity map:

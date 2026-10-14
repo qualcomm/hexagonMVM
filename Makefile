@@ -25,7 +25,8 @@ GUEST_TESTS := first test_vmversion test_interrupts test_processors test_mmu
 GUEST_CFLAGS := --no-default-config --target=hexagon -mcpu=hexagonv73 -nostdlib \
 	-fuse-ld=lld -T tests/guest.ld
 
-.PHONY: minivm minivm-debug guest-tests linux-boot clean-guest-tests
+.PHONY: minivm minivm-debug guest-tests sim-guest-tests linux-boot \
+	clean-guest-tests
 
 minivm:
 	$(CARGO_BUILD) --release
@@ -45,7 +46,7 @@ $(BUILD_DIR)/%.elf: tests/%.S hexagon_vm.h tests/guest.ld | $(BUILD_DIR)
 $(BUILD_DIR)/%.bin: $(BUILD_DIR)/%.elf
 	$(OBJCOPY) -O binary $< $@
 
-.PRECIOUS: $(BUILD_DIR)/%.elf $(BUILD_DIR)/%.bin
+.PRECIOUS: $(BUILD_DIR)/%.elf $(BUILD_DIR)/%.bin $(BUILD_DIR)/%.sim.elf
 
 # Run a single test: minivm as the machine's kernel, the guest loaded where
 # minivm looks for one when there is no device tree to say otherwise.
@@ -63,6 +64,42 @@ $(BUILD_DIR)/%.pass: $(BUILD_DIR)/%.bin $(MINIVM)
 		touch $@; \
 	else \
 		echo "  FAIL $* (status $$rc; see $(BUILD_DIR)/$*.log)"; \
+		exit 1; \
+	fi
+
+# The same guest tests on hexagon-sim, the reference simulator. It loads one
+# ELF, so each guest is added to a copy of minivm as an extra segment. The
+# simulator's semihosting reads memory through the MMU only with
+# --v2p_translation. HEXAGON_TOOLS is the Tools directory of a Hexagon SDK
+# toolchain.
+HEXAGON_TOOLS ?= /opt/Hexagon_SDK/6.4.0.2/tools/HEXAGON_Tools/19.0.04/Tools
+HEXAGON_SIM   ?= $(HEXAGON_TOOLS)/bin/hexagon-sim
+SIM_FLAGS     := -mv68 --simulated_returnval --v2p_translation 1 \
+	--subsystem_base 0xfe28 --cosim_file $(BUILD_DIR)/q6ss.cfg
+# Not test_mmu: it prints PASS or FAIL from user mode, out of a page the
+# simulator's semihosting cannot translate, so nothing shows which it was.
+SIM_GUEST_TESTS := first test_vmversion test_interrupts test_processors
+
+sim-guest-tests: $(addprefix $(BUILD_DIR)/, $(addsuffix .simpass, $(SIM_GUEST_TESTS)))
+	@echo "All guest tests passed on hexagon-sim."
+
+$(BUILD_DIR)/q6ss.cfg: | $(BUILD_DIR)
+	printf '%s\n' \
+		"$(HEXAGON_TOOLS)/lib/iss/qtimer.so --csr_base=0xfe280000 --irq_p=2 --freq=19200000 --cnttid=0x01" \
+		"$(HEXAGON_TOOLS)/lib/iss/l2vic.so 32 0xfe290000" > $@
+
+$(BUILD_DIR)/%.sim.elf: $(BUILD_DIR)/%.bin $(MINIVM)
+	$(PYTHON) scripts/add_segment.py $(MINIVM) $< 0xa0000000 $@
+
+$(BUILD_DIR)/%.simpass: $(BUILD_DIR)/%.sim.elf $(BUILD_DIR)/q6ss.cfg
+	@echo "  SIM  $*"
+	@timeout 900 script -qfec "$(HEXAGON_SIM) $(SIM_FLAGS) $<" /dev/null \
+		< /dev/null > $(BUILD_DIR)/$*.sim.log 2>&1; rc=$$?; \
+	if [ $$rc = 0 ] && grep -q "^PASS" $(BUILD_DIR)/$*.sim.log; then \
+		echo "  PASS $*"; \
+		touch $@; \
+	else \
+		echo "  FAIL $* (status $$rc, see $(BUILD_DIR)/$*.sim.log)"; \
 		exit 1; \
 	fi
 
