@@ -1,73 +1,69 @@
-ARCH=hexagon-unknown-none-elf-
-CC=${ARCH}clang
-LD=${CC}
-OBJCOPY=${ARCH}objcopy
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: BSD-3-Clause-Clear
+#
+# Makefile for building minivm and running its tests on QEMU.
 
-ARCHV?=73
-GUEST_ENTRY?=0xc0000000
-USER_TEXT?=0x20000000
-USER_RODATA?=0x20400000
-USER_DATA?=0x20800000
-USER_DATA2?=0x20900000
+CLANG     ?= clang
+OBJCOPY   ?= llvm-objcopy
+QEMU      ?= qemu-system-hexagon
+MINIVM    ?= target/hexagon-unknown-none-elf/release/minivm
+BUILD_DIR := target/guest-tests
 
-TESTS=$(wildcard tests/*.S)
-TESTS_BIN=$(patsubst tests/%.S,tests_bin/%,${TESTS})
-RUN_TESTS=$(patsubst tests/%.S,run-%,${TESTS})
+CARGO_BUILD := cargo build -Zbuild-std=core,alloc \
+	-Zbuild-std-features=compiler-builtins-mem
 
-all: minivm test
+# Allow the Rust linker to be overridden via CC (used in CI with a cross clang).
+# When CC is not set, .cargo/config.toml supplies the linker.
+ifneq ($(origin CC),default)
+export CARGO_TARGET_HEXAGON_UNKNOWN_NONE_ELF_LINKER := $(CC)
+endif
 
-CFLAGS_EXTRA+=-mv${ARCHV} -O0 -g -DGUEST_ENTRY=${GUEST_ENTRY}
-ASFLAGS_EXTRA+=${CFLAGS_EXTRA}
-LDFLAGS_EXTRA+=-nostdlib -static
-GUEST_LDFLAGS=-nostdlib \
-    -Wl,-section-start,.start=${GUEST_ENTRY} \
-    -Wl,-section-start,.user_text=${USER_TEXT} \
-    -Wl,-section-start,.user_rodata=${USER_RODATA} \
-    -Wl,-section-start,.user_data=${USER_DATA} \
-    -Wl,-section-start,.user_data2=${USER_DATA2}
+GUEST_TESTS := first test_vmversion test_mmu
+# Guests bring their own startup code and linker script; newer CodeLinaro
+# toolchains ship a hexagon.cfg that would add picolibc's.
+GUEST_CFLAGS := --no-default-config --target=hexagon -mcpu=hexagonv73 -nostdlib \
+	-fuse-ld=lld -T tests/guest.ld
 
-OBJS=minivm.o
+.PHONY: minivm minivm-debug guest-tests clean-guest-tests
 
-prefix?=/usr/local
-exec_prefix?=$(prefix)
-bindir?=$(exec_prefix)/bin
+minivm:
+	$(CARGO_BUILD) --release
 
-minivm.o: minivm.S hexagon_vm.h
-	${CC} ${CFLAGS} ${CFLAGS_EXTRA} -c -o $@ $<
+minivm-debug:
+	$(CARGO_BUILD)
 
-minivm: ${OBJS} Makefile hexagon.lds
-	${LD} -o $@ -T hexagon.lds ${OBJS} ${LDFLAGS} ${LDFLAGS_EXTRA}
+guest-tests: $(addprefix $(BUILD_DIR)/, $(addsuffix .pass, $(GUEST_TESTS)))
+	@echo "All guest tests passed."
 
-tests_bin/%: tests/%.S hexagon_vm.h Makefile
-	@mkdir -p tests_bin
-	${CC} ${CFLAGS} ${CFLAGS_EXTRA} -o $@ $< ${GUEST_LDFLAGS}
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
 
-.PHONY: test build_tests run_tests FORCE
-test:
-	make build_tests
-	make run_tests
+$(BUILD_DIR)/%.elf: tests/%.S hexagon_vm.h tests/guest.ld | $(BUILD_DIR)
+	$(CLANG) $(GUEST_CFLAGS) -I. -o $@ $<
 
-build_tests: ${TESTS_BIN}
+$(BUILD_DIR)/%.bin: $(BUILD_DIR)/%.elf
+	$(OBJCOPY) -O binary $< $@
 
-run_tests: ${RUN_TESTS}
+.PRECIOUS: $(BUILD_DIR)/%.elf $(BUILD_DIR)/%.bin
 
-run-%: tests_bin/% minivm
-	qemu-system-hexagon \
-		-display none -M SA8775P_CDSP0 -kernel ./minivm ${QEMU_OPTS} \
-		-device loader,addr=${GUEST_ENTRY},file=$<
+# Run a single test: minivm as the machine's kernel, the guest loaded where
+# minivm looks for one when there is no device tree to say otherwise.
+# `-bios none` keeps QEMU from loading its bundled firmware. `timeout` runs
+# QEMU in a background process group, where taking over a terminal on stdin
+# would stop it, so stdin is /dev/null.
+$(BUILD_DIR)/%.pass: $(BUILD_DIR)/%.bin $(MINIVM)
+	@echo "  TEST $*"
+	@timeout 120 $(QEMU) -M virt -bios none -nographic \
+		-kernel $(MINIVM) \
+		-device "loader,addr=0xa0000000,file=$<" \
+		< /dev/null > $(BUILD_DIR)/$*.log 2>&1; rc=$$?; \
+	if [ $$rc = 0 ] && grep -q "^PASS" $(BUILD_DIR)/$*.log; then \
+		echo "  PASS $*"; \
+		touch $@; \
+	else \
+		echo "  FAIL $* (status $$rc; see $(BUILD_DIR)/$*.log)"; \
+		exit 1; \
+	fi
 
-.PHONY: dbg install
-dbg: FORCE
-	lldb -o 'file ./minivm' -o 'target modules add ./vmlinux' -o 'target modules load -s 0 --file ./vmlinux' -o 'gdb-remote localhost:1234' ${LLDB_OPTS}
-
-minivm.bin: minivm
-	${OBJCOPY} -O binary $< $@
-
-install: minivm minivm.bin $(TESTS_BIN)
-	 mkdir -p $(bindir)/
-	 install -D $^ $(bindir)/
-
-clean:
-	rm -rf tests_bin minivm minivm.bin ${OBJS}
-
-
+clean-guest-tests:
+	rm -rf $(BUILD_DIR)

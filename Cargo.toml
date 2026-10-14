@@ -12,3 +12,21 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "BSD-3-Clause-Clear"
+
+[package]
+name = "minivm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+minivm-mem = { path = "crates/minivm-mem" }
+minivm-types = { path = "crates/minivm-types" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+
+[profile.dev]
+panic = "abort"
