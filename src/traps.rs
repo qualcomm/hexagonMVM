@@ -114,8 +114,8 @@ fn trap1(m: &mut Mon, cpu: usize, trap: u32) {
             let ret = newmap(m, cpu, r0, r1, r2 != 0, r3);
             m.cpus[cpu].set_r0(ret);
         }
-        // vmcache: nothing to do for a cache that is not modelled
-        13 => m.cpus[cpu].set_r0(0),
+        // vmcache
+        13 => m.cpus[cpu].set_r0(crate::cache::vmcache(r0) as u32),
         // vmgettime
         14 => {
             m.cpus[cpu].ctx.r0100 = m.now().wrapping_add(m.cycle_offset);
@@ -306,7 +306,8 @@ fn info(m: &Mon, code: u32) -> u32 {
         17 => hwint::TIMER_INT,
         18 => 0, // no kernel error
         19 => m.hthreads,
-        20..=22 => 0,
+        20 => p.l2tag_size,
+        21 | 22 => 0,
         23 => p.cfg_base >> 16,
         24 => {
             if p.coproc_present != 0 {
@@ -321,7 +322,8 @@ fn info(m: &Mon, code: u32) -> u32 {
         28 => p.vtcm_size_kb,
         29 => 0,
         30 => p.l2line_size,
-        31..=45 => 0,
+        33 => p.l1d_size_kb,
+        31 | 32 | 35..=45 => 0,
         _ => !0,
     }
 }

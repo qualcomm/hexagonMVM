@@ -22,6 +22,7 @@
 #![feature(asm_experimental_arch)]
 
 mod arch;
+mod cache;
 mod console;
 mod discovery;
 mod hwint;
@@ -90,6 +91,7 @@ struct BootInfo {
     /// the monitor, with nothing in `/reserved-memory` or the memory
     /// reservation block to keep it off.
     monitor_exposed: Option<(u64, u64)>,
+    caches: cache::DtCaches,
 }
 
 /// A property holding one address or size, of one or two cells.
@@ -151,6 +153,7 @@ fn read_fdt(fdt_phys: u64, monitor: (u64, u64)) -> BootInfo {
         uart: None,
         guest_entry: None,
         monitor_exposed: None,
+        caches: cache::DtCaches::default(),
     };
 
     if fdt_phys == 0 || fdt_phys > u32::MAX as u64 || fdt_phys & 3 != 0 {
@@ -199,6 +202,14 @@ fn read_fdt(fdt_phys: u64, monitor: (u64, u64)) -> BootInfo {
             .and_then(|c| prop_u32(&c, "hvm,guest-entry"))
             .or_else(|| fdt.find_node("/memory").and_then(first_reg));
         info.monitor_exposed = find_exposed(&fdt, monitor.0, monitor.1);
+        if let Some(cpu) = fdt.find_node("/cpus/cpu@0") {
+            info.caches.d_size = prop_u32(&cpu, "d-cache-size");
+            info.caches.d_line = prop_u32(&cpu, "d-cache-line-size");
+            info.caches.d_sets = prop_u32(&cpu, "d-cache-sets");
+            info.caches.l2_size = prop_u32(&cpu, "next-level-cache")
+                .and_then(|ph| fdt.find_phandle(ph))
+                .and_then(|l2| prop_u32(&l2, "cache-size"));
+        }
     }
     unsafe {
         arch::tlbw(0, tlb::FDT0);
@@ -261,6 +272,7 @@ pub extern "C" fn minivm_main(fdt_phys: u64, phys_base: u32) {
             0,
         );
     }
+    unsafe { cache::init(&plat, &boot.caches) };
     // The L2VIC and QTIMER sit a few pages apart in the subsystem block;
     // one 4M page covers both.
     let dev_pa = plat.ss_base & !0x3f_ffff;
