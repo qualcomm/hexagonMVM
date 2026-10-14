@@ -24,6 +24,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "minivm-guest-tests"
+version = "0.1.0"
+
+[[package]]
 name = "minivm-mem"
 version = "0.1.0"
 dependencies = [

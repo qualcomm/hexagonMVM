@@ -143,6 +143,12 @@ The `tests/*.S` ones are assembly.
 make guest-tests
 ```
 
+or through cargo (missing tools are reported as errors):
+
+```bash
+cargo test -p minivm-guest-tests --target x86_64-unknown-linux-gnu
+```
+
 A flat guest image is loaded at `0xa0000000` and entered there under an
 identity map:
 
@@ -158,7 +164,7 @@ needs RAM at minivm's load address, which the default 4G provides.
 ### Host unit tests
 
 ```bash
-cargo test --workspace --exclude minivm \
+cargo test --workspace --exclude minivm --exclude minivm-guest-tests \
     --target x86_64-unknown-linux-gnu
 ```
 

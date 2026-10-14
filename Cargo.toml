@@ -6,6 +6,7 @@ resolver = "2"
 members = [
     "crates/minivm-types",
     "crates/minivm-mem",
+    "crates/minivm-guest-tests",
 ]
 
 [workspace.package]
