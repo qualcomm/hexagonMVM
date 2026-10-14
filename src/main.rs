@@ -22,6 +22,7 @@
 mod arch;
 mod console;
 mod discovery;
+mod hwint;
 mod mon;
 mod panic;
 mod semihosting;
@@ -32,7 +33,7 @@ use minivm_types::asid::TranslationType;
 use minivm_types::config::OffsetConfig;
 use minivm_types::regs::boot_defaults::{THREAD_CCR, THREAD_USR};
 
-use mon::VcpuInit;
+use mon::{tlb, va, VcpuInit};
 
 core::arch::global_asm!(include_str!("entry.S"));
 core::arch::global_asm!(include_str!("context.S"));
@@ -43,7 +44,15 @@ const MINIVM_LINK_ADDR: u32 = 0xff00_0000;
 const GUEST_ADDR: u32 = 0xa000_0000;
 
 const SIZE_4M: u32 = 5;
+const PERM_RW: u32 = 0x6;
+const CACHE_DEVICE: u32 = 0x4;
 const CACHE_MEMORY: u32 = 0x7;
+
+const SYSCFG_GIE: u32 = 1 << 4;
+const SYSCFG_PCYCLEEN: u32 = 1 << 6;
+const SYSCFG_PM: u32 = 1 << 9;
+const SYSCFG_BQ: u32 = 1 << 13;
+const SYSCFG_DMT: u32 = 1 << 15;
 
 /// The monitor cannot continue. Say why and take the machine down.
 pub fn fatal(what: &[u8], ssr: u32, elr: u32) -> ! {
@@ -83,11 +92,37 @@ pub extern "C" fn minivm_main(_fdt_phys: u64, phys_base: u32) {
     console::field(b"  core revision   ", plat.rev);
     console::field(b"  subsystem base  ", plat.ss_base);
 
+    if plat.ss_base == 0 {
+        fatal(b"no config table: cannot find the L2VIC and QTIMER", 0, 0);
+    }
     if plat.arch != Some(ArchVersion::V68) {
         fatal(
             b"unsupported core: this image targets the V68 family",
             plat.rev,
             0,
+        );
+    }
+    // The L2VIC and QTIMER sit a few pages apart in the subsystem block;
+    // one 4M page covers both.
+    let dev_pa = plat.ss_base & !0x3f_ffff;
+    let dev_end = plat.qtimer_base + 0x2000;
+    if dev_end - dev_pa > 0x40_0000 {
+        fatal(b"subsystem block straddles a 4M boundary", plat.ss_base, 0);
+    }
+    unsafe {
+        arch::tlbw(
+            arch::tlb_entry(va::DEVICES, dev_pa, SIZE_4M, PERM_RW, CACHE_DEVICE),
+            tlb::DEVICES,
+        );
+        hwint::init(
+            va::DEVICES + (plat.l2vic_base - dev_pa),
+            va::DEVICES + (plat.qtimer_base - dev_pa),
+        );
+        hwint::init_thread(0);
+        // Interrupts on, pcycle counter and PMU running, and the
+        // translation and bus settings Linux expects.
+        arch::set_syscfg(
+            (arch::syscfg() | SYSCFG_GIE | SYSCFG_PCYCLEEN | SYSCFG_PM | SYSCFG_DMT) & !SYSCFG_BQ,
         );
     }
 
@@ -96,6 +131,7 @@ pub extern "C" fn minivm_main(_fdt_phys: u64, phys_base: u32) {
         m.plat = plat;
         m.phys_base = phys_base;
         m.phys_end = phys_end;
+        m.devices_base = dev_pa;
         if plat.jtlb_entries <= mon::FIRST_GUEST_TLB {
             fatal(b"TLB size not reported by the platform", 0, plat.jtlb_entries);
         }

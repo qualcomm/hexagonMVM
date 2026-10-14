@@ -4,7 +4,7 @@
  */
 
 /*
- * Exception vector table and startup code.
+ * Exception vector table, startup code and the idle loop.
  *
  * The vector table is the first 32 words of the image: the core jumps to
  * EVB + 4*event, and events 16..31 are the sixteen core interrupts.
@@ -75,7 +75,7 @@ _start:
 	jump .Lunexpected		/* 14 */
 	jump .Lunexpected		/* 15 */
 	.rept 16
-	jump .Lunexpected		/* 16..31: core interrupts */
+	jump .Linterrupt		/* 16..31: core interrupts */
 	.endr
 
 .Ltrap0:
@@ -86,6 +86,8 @@ _start:
 	EVENT minivm_error
 .Ltlbmiss:
 	EVENT minivm_tlbmiss
+.Linterrupt:
+	EVENT minivm_interrupt
 .Lunexpected:
 	EVENT minivm_unexpected
 
@@ -169,7 +171,24 @@ _start:
 	jumpr r31
 	.size _start, . - _start
 
+/*
+ * What a hardware thread runs when it has no virtual CPU to run: wait for
+ * an interrupt. It runs in monitor mode with interrupts enabled, under a
+ * context of its own, so the interrupt that ends the wait is taken through
+ * the ordinary vector and saves nothing of value.
+ *
+ * QEMU also resumes a waiting thread when an interrupt is pending that the
+ * thread cannot take, hence the loop.
+ */
 	.section .text, "ax", @progbits
+	.globl minivm_idle_loop
+	.type minivm_idle_loop, @function
+	.p2align 2
+minivm_idle_loop:
+	r0 = #0
+	wait(r0)
+	jump minivm_idle_loop
+	.size minivm_idle_loop, . - minivm_idle_loop
 
 /* Take this hardware thread off line. Does not return. */
 	.globl minivm_stop_thread

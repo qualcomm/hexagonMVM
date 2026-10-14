@@ -14,7 +14,8 @@ use minivm_types::translate::Translation;
 use minivm_types::vm::{GSSR_IE, GSSR_UM, VM_VERSION};
 
 use crate::arch;
-use crate::mon::{self, Mon, FIRST_GUEST_TLB, MAX_HT};
+use crate::hwint;
+use crate::mon::{self, Mon, State, FIRST_GUEST_TLB, MAX_HT};
 
 // Hardware exception causes that are reported to the guest under a
 // different code, or raised by the monitor itself.
@@ -73,6 +74,7 @@ fn trap1(m: &mut Mon, cpu: usize, trap: u32) {
             }
             c.ctx.elr = c.ctx.gelr;
             if gssr & GSSR_IE != 0 {
+                // May turn straight into the next interrupt event.
                 m.enable_ie(cpu);
             }
         }
@@ -88,12 +90,19 @@ fn trap1(m: &mut Mon, cpu: usize, trap: u32) {
             } else {
                 m.disable_ie(cpu)
             };
+            // If enabling took an interrupt, the guest sees this return
+            // value when its handler returns here.
             m.cpus[cpu].set_r0(prev as u32);
         }
         // vmgetie
         4 => {
             let ie = m.cpus[cpu].ie();
             m.cpus[cpu].set_r0(ie as u32);
+        }
+        // vmintop
+        5 => {
+            let ret = m.intop(cpu, r0, r1, r2);
+            m.cpus[cpu].set_r0(ret as u32);
         }
         // vmclrmap
         10 => {
@@ -107,6 +116,23 @@ fn trap1(m: &mut Mon, cpu: usize, trap: u32) {
         }
         // vmcache: nothing to do for a cache that is not modelled
         13 => m.cpus[cpu].set_r0(0),
+        // vmgettime
+        14 => {
+            m.cpus[cpu].ctx.r0100 = m.now().wrapping_add(m.cycle_offset);
+            m.cpus[cpu].ctx.r0302 = m.pktcount;
+        }
+        // vmsettime
+        15 => {
+            m.cycle_offset = m.cpus[cpu].ctx.r0100.wrapping_sub(m.now());
+            m.pktcount = m.cpus[cpu].ctx.r0302;
+        }
+        // vmwait
+        16 => match m.do_work(cpu) {
+            // Either it was just taken as an event or the guest's
+            // interrupts are off; vmwait returns its number in both cases.
+            Some(intno) => m.cpus[cpu].set_r0(intno),
+            None => m.cpus[cpu].state = State::Waiting,
+        },
         // vmyield: every virtual CPU has a hardware thread to itself
         17 => m.cpus[cpu].set_r0(0),
         // vmstop
@@ -124,6 +150,11 @@ fn trap1(m: &mut Mon, cpu: usize, trap: u32) {
             c.r0100 = ((c.gssr as u64) << 32) | c.gelr as u64;
             c.r0302 = ((c.gbadva as u64) << 32) | c.gosp as u64;
         }
+        // vmtimerop
+        24 => {
+            let arg = m.cpus[cpu].ctx.r0302;
+            m.cpus[cpu].ctx.r0100 = m.timerop(cpu, r0, arg);
+        }
         // vmpmuconfig
         25 => m.cpus[cpu].set_r0(0),
         // Not a virtual instruction: an error event, as for one from user
@@ -137,6 +168,8 @@ fn trap1(m: &mut Mon, cpu: usize, trap: u32) {
 fn stop(m: &mut Mon, cpu: usize, status: u32) {
     let asid = Ssr::new(m.cpus[cpu].ctx.ssr).asid() as u32;
     m.asids.dec(asid);
+    m.cpus[cpu].state = State::Off;
+    m.cancel_timeout(cpu);
     m.num_cpus -= 1;
     m.stop_reason = m.stop_reason.merge(status);
     if m.num_cpus == 0 {
@@ -308,6 +341,7 @@ pub extern "C" fn minivm_tlbmiss(ctx: *mut ThreadContext) {
                 trans = trans.with_size(max_size);
             }
             let monitor = (m.phys_base as u64, m.phys_end as u64);
+            let devices = (m.devices_base as u64, m.devices_base as u64 + 0x40_0000);
             // Reservations keep a cooperative OS allocator away from these
             // pages; this check is the actual guest access-control boundary.
             // It also holds every translation type to the fences. A large
@@ -316,7 +350,7 @@ pub extern "C" fn minivm_tlbmiss(ctx: *mut ThreadContext) {
                 trans,
                 max_size,
                 (fences.lo, fences.hi),
-                &[monitor],
+                &[monitor, devices],
             );
             // An entry is installed with whatever permissions the guest's
             // mapping has; an access those do not allow then takes a
@@ -352,6 +386,15 @@ pub extern "C" fn minivm_tlbmiss(ctx: *mut ThreadContext) {
             unsafe { arch::tlbw(entry, idx) };
         }
     });
+}
+
+#[no_mangle]
+pub extern "C" fn minivm_interrupt(ctx: *mut ThreadContext) {
+    let cpu = arch::htid();
+    let core_int = unsafe { (*ctx).ssr } & 0x1f;
+    let mut m = mon::lock();
+    hwint::interrupt(&mut m, cpu, core_int);
+    m.leave(cpu);
 }
 
 #[no_mangle]
