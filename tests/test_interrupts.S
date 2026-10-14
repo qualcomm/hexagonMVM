@@ -42,6 +42,10 @@ _start:
 
 	// Get the physical address of guest_pt
 	r25 = pc
+	// Round down to the 4M-aligned image base: `pc` reads the address of
+	// *this* packet, not _start, and a page-table base is only honoured to
+	// page granularity.
+	r25 = and(r25, ##0xffc00000)
 	r24 = ##(guest_pt-_start)
 	r24 = add(r24, r25)
 
@@ -62,12 +66,14 @@ _start:
 
 	// Post interrupt 13
 	r0 = #HVM_INTOP_POST
+	r2 = #0			// target: this virtual processor
 	r1 = #13
 	vmintop
 	{ p0 = cmp.eq(r0, #0); if (!p0.new) jump:nt _fail }
 
 	// Post interrupt 15
 	r0 = #HVM_INTOP_POST
+	r2 = #0			// target: this virtual processor
 	r1 = #15
 	vmintop
 	{ p0 = cmp.eq(r0, #0); if (!p0.new) jump:nt _fail }
@@ -120,6 +126,7 @@ _start:
 
 	// Post interrupt 13
 	r0 = #HVM_INTOP_POST
+	r2 = #0			// target: this virtual processor
 	r1 = #13
 	vmintop
 	{ p0 = cmp.eq(r0, #0); if (!p0.new) jump:nt _fail }

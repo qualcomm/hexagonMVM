@@ -43,12 +43,17 @@ _start:
 
 	// Get the physical address of guest_pt
 	r25 = pc
+	// Round down to the 4M-aligned image base: `pc` reads the address of
+	// *this* packet, not _start, and a page-table base is only honoured to
+	// page granularity.
+	r25 = and(r25, ##0xffc00000)
 	r24 = ##(guest_pt-_start)
 	r24 = add(r24, r25)
 
 	CREATE_PTE_ENTRIES(_start, _end_guest, GUEST_PTE_BITS)
 
 	r0 = r24
+	r1 = #HVM_TRANS_TYPE_TABLE
 	vmnewmap
 
 	// Install our event vectors
@@ -59,7 +64,9 @@ _start:
 	r3:2 = #0xff
 	vmsettime
 	vmgettime
-	{ p0 = cmp.gtu(r1:0, r3:2); if (!p0) jump:nt _fail }
+	/* .new: a non-.new predicate read in the same packet would use the
+	   stale pre-packet p0 value */
+	{ p0 = cmp.gtu(r1:0, r3:2); if (!p0.new) jump:nt _fail }
 
 	// Start a new virtual processor
 	r1 = ##(stack1 + STACK_SIZE - 8)
@@ -87,7 +94,7 @@ _start:
 	trap0(#0)
 
 	// Successful test
-	r2 = #0
+	r0 = #0
 	vmstop
 
 _fail:
@@ -96,13 +103,14 @@ _fail:
 	r1 = ##fail_args
 	trap0(#0)
 
-	r2 = #0xff		// return failure to shell
+	r0 = #0xff		// return failure to shell
 	vmstop
 
 _proc1:
 	vmyield
 	vmvpid
 	memw(r29) = r0
+	r0 = #0
 	vmstop
 
 	.type	pass_str,@object
@@ -137,7 +145,7 @@ GUEST_event_vectors:
 
 
 GUEST_event_abort:
-	r2 = gsr		// return gsr value to shell
+	r0 = gsr		// return gsr value to shell
 	vmstop
 
 // Simple trap0 handler
@@ -155,7 +163,6 @@ GUEST_event_trap0:
 		p0 = cmp.eq(r10, #1)
 		if (!p0.new) jump:nt 1f
 	}
-	r2 = r0
 	vmstop
 1:
 	r10 = memw(r29+#4)
