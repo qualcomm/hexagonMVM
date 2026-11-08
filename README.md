@@ -33,7 +33,7 @@ What it does not do:
   nothing to compare against.
 - **No scheduler.** Every virtual CPU is pinned to its own hardware thread,
   so a guest cannot have more virtual CPUs than the machine has threads, and
-  there is one guest. This image uses at most the first eight threads.
+  there is one guest. This image has room for sixteen threads.
 - **V68- and V81-family cores are tested.** V85 has been exercised on QEMU's
   `sm8975-nsp` machine. Other revisions are allowed to boot, but have not yet
   received the same validation.

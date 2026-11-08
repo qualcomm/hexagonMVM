@@ -112,7 +112,7 @@ minivm_context_save:
 	.size minivm_context_save, . - minivm_context_save
 
 	.equ EXC_STACK_SIZE, 32768
-	.equ NUM_EXC_STACKS, 8
+	.equ NUM_EXC_STACKS, 16
 
 	.section .bss
 	.p2align 3

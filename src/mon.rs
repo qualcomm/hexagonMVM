@@ -37,7 +37,7 @@ use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Hardware threads the monitor has room for.
-pub const MAX_HT: usize = 8;
+pub const MAX_HT: usize = 16;
 /// Interrupts 0..16 are private to each virtual CPU; the rest are shared.
 pub const PERCPU_INTS: u32 = 16;
 /// Shared interrupts: 288 device lines and 32 more.

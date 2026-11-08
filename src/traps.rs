@@ -537,4 +537,4 @@ pub extern "C" fn minivm_unexpected(ctx: *mut ThreadContext) {
     crate::fatal(b"unexpected event", ssr, elr);
 }
 
-const _: () = assert!(MAX_HT <= 8);
+const _: () = assert!(MAX_HT <= 16);

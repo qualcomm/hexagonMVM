@@ -27,7 +27,7 @@
 
 	.equ BOOT_STACK_SIZE, 16384
 	.equ SYSCFG_ID, 0x6		/* L1 instruction and data caches */
-	.equ MAX_HTHREADS, 8
+	.equ MAX_HTHREADS, 16
 
 	.section .bss
 	.p2align 3
