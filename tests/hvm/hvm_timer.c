@@ -13,7 +13,6 @@
 
 #define TIMER 12
 #define SPINS 256
-#define NCPU_MAX 8
 #define DONE 1
 #define RANDOM_SHIFT 14
 #define RANDOM_BASE 50000

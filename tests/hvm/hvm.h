@@ -76,6 +76,9 @@ void hvm_wr_gbadva(u32);
 u32 hvm_run_user(u32 (*fn)(u32), u32 arg, void *usp);
 extern volatile u32 hvm_user_result;
 extern char hvm_stacks[];
+/* Virtual CPUs the guests use, and stacks for them: one per CPU, matching
+   NSTACKS in crt.S. minivm has room for this many hardware threads. */
+#define NCPU_MAX 16
 #define STACK_SIZE 16384
 #define STACK_TOP(i) ((void *)(hvm_stacks + STACK_SIZE * ((i) + 1)))
 

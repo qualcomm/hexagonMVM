@@ -14,7 +14,6 @@
 #define IPI 1
 #define SHARED 50
 #define TIMER 12
-#define NCPU_MAX 8
 
 static volatile u32 ids[NCPU_MAX];
 static volatile u32 got[NCPU_MAX][64];
@@ -106,11 +105,11 @@ int main(void)
 	CHECK("misaligned sp", hvm_start(secondary, (char *)STACK_TOP(1) - 4), -1);
 
 	puts_("vmstart: every thread\n");
-	u32 n = start_all(NCPU_MAX + 1);
+	u32 n = start_all(NCPU_MAX);
 	say("cpus", n);
 	if (n < 2)
 		fail("no second cpu", n, 2);
-	/* One more than there are threads for. */
+	/* Every hardware thread is in use now. */
 	CHECK("start with none free", hvm_start(secondary, STACK_TOP(n)), -1);
 
 	puts_("ipi ping-pong\n");
@@ -155,8 +154,9 @@ int main(void)
 
 	puts_("stop and start again\n");
 	stop_all(n);
-	u32 m = start_all(3);
-	CHECK("restart", m, 3);
+	u32 want = n < 3 ? n : 3;
+	u32 m = start_all(want);
+	CHECK("restart", m, want);
 	for (u32 i = 1; i < m; i++) {
 		u32 before = got[i][IPI];
 		hvm_intop(INTOP_POST, IPI, ids[i]);

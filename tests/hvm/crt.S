@@ -12,7 +12,7 @@
  */
 
 	.equ STACK_SIZE, 16384
-	.equ NSTACKS, 8
+	.equ NSTACKS, 16		/* NCPU_MAX in hvm.h */
 
 	.section .bss
 	.p2align 3
