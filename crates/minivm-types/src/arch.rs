@@ -27,7 +27,8 @@ impl ArchVersion {
             0x65..=0x67 => Some(Self::V65),
             0x68..=0x72 => Some(Self::V68),
             0x73 | 0x75 | 0x77 | 0x79 => Some(Self::V73),
-            0x81 | 0x83 | 0x85 | 0x87 | 0x89 | 0x91 => Some(Self::V81),
+            // V81 and every later revision: the newest family known.
+            0x81..=0xff => Some(Self::V81),
             _ => None,
         }
     }
@@ -45,6 +46,12 @@ impl ArchVersion {
     /// Whether the architecture has the VWCTRL register (v73+).
     pub const fn has_vwctrl(self) -> bool {
         self as u8 >= Self::V73 as u8
+    }
+
+    /// Whether the pending and auto-disable interrupt state is in separate
+    /// IPEND and IAD registers (v81+), rather than packed in IPENDAD.
+    pub const fn has_split_ipend_iad(self) -> bool {
+        self as u8 >= Self::V81 as u8
     }
 
     /// Maximum page size supported.
@@ -88,6 +95,8 @@ mod tests {
         assert_eq!(ArchVersion::from_rev(0x81), Some(ArchVersion::V81));
         assert_eq!(ArchVersion::from_rev(0x83), Some(ArchVersion::V81));
         assert_eq!(ArchVersion::from_rev(0x91), Some(ArchVersion::V81));
+        assert_eq!(ArchVersion::from_rev(0x93), Some(ArchVersion::V81));
+        assert_eq!(ArchVersion::from_rev(0xff), Some(ArchVersion::V81));
         assert_eq!(ArchVersion::from_rev(0x04), None);
     }
 
@@ -106,5 +115,8 @@ mod tests {
         assert!(!ArchVersion::V68.has_vwctrl());
         assert!(ArchVersion::V73.has_vwctrl());
         assert!(ArchVersion::V81.has_vwctrl());
+        assert!(!ArchVersion::V68.has_split_ipend_iad());
+        assert!(!ArchVersion::V73.has_split_ipend_iad());
+        assert!(ArchVersion::V81.has_split_ipend_iad());
     }
 }
