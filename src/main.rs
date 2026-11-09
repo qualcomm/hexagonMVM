@@ -31,7 +31,6 @@ mod panic;
 mod semihosting;
 mod traps;
 
-use minivm_types::arch::ArchVersion;
 use minivm_types::asid::TranslationType;
 use minivm_types::config::OffsetConfig;
 use minivm_types::regs::boot_defaults::{THREAD_CCR, THREAD_USR};
@@ -253,13 +252,6 @@ pub extern "C" fn minivm_main(fdt_phys: u64, phys_base: u32) {
     if plat.ss_base == 0 {
         fatal(b"no config table: cannot find the L2VIC and QTIMER", 0, 0);
     }
-    if plat.arch != Some(ArchVersion::V68) {
-        fatal(
-            b"unsupported core: this image targets the V68 family",
-            plat.rev,
-            0,
-        );
-    }
     if let Some((start, end)) = boot.monitor_exposed {
         // The guest would take minivm's memory for its own. A
         // /reserved-memory node covering the monitor keeps it off.
@@ -288,6 +280,7 @@ pub extern "C" fn minivm_main(fdt_phys: u64, phys_base: u32) {
         hwint::init(
             va::DEVICES + (plat.l2vic_base - dev_pa),
             va::DEVICES + (plat.qtimer_base - dev_pa),
+            plat.arch,
         );
         hwint::init_thread(0);
         // Interrupts on, pcycle counter and PMU running, and the
@@ -304,7 +297,11 @@ pub extern "C" fn minivm_main(fdt_phys: u64, phys_base: u32) {
         m.phys_end = phys_end;
         m.devices_base = dev_pa;
         if plat.jtlb_entries <= mon::FIRST_GUEST_TLB {
-            fatal(b"TLB size not reported by the platform", 0, plat.jtlb_entries);
+            fatal(
+                b"TLB size not reported by the platform",
+                0,
+                plat.jtlb_entries,
+            );
         }
         m.tlb_size = plat.jtlb_entries;
         m.cpus[0].started = true;

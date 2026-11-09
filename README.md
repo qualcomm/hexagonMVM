@@ -34,8 +34,9 @@ What it does not do:
 - **No scheduler.** Every virtual CPU is pinned to its own hardware thread,
   so a guest cannot have more virtual CPUs than the machine has threads, and
   there is one guest. This image uses at most the first eight threads.
-- **V68-family cores only.** The build, context state, and maximum TLB page
-  size are validated against the core revision at boot.
+- **V68- and V81-family cores are tested.** V85 has been exercised on QEMU's
+  `sm8975-nsp` machine. Other revisions are allowed to boot, but have not yet
+  received the same validation.
 - **No single-stepping** of the guest (`GSSR.SS` is ignored), and the PMU
   calls are accepted and ignored.
 - **Real hardware is untested.** It has run on QEMU and hexagon-sim only.

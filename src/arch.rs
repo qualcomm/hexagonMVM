@@ -7,6 +7,57 @@
 //! uses.
 
 use core::arch::asm;
+use minivm_types::arch::ArchVersion;
+
+/// Snapshot of the core interrupt pending and auto-disable masks.
+#[derive(Clone, Copy)]
+pub struct InterruptState {
+    pub pending: u32,
+    pub auto_disable: u32,
+}
+
+struct InterruptLayout {
+    pending_mask: u32,
+    auto_disable_mask: u32,
+    auto_disable_shift: u32,
+}
+
+// Before V81 both masks are 16 bits wide, packed in IPENDAD.
+const PACKED_IPENDAD: InterruptLayout = InterruptLayout {
+    pending_mask: 0xffff,
+    auto_disable_mask: 0xffff_0000,
+    auto_disable_shift: 16,
+};
+
+// From V81 the native IPEND and IAD registers are 32 bits wide. IPENDAD stays
+// as a compatibility view of their low sixteen bits, in the same positions as
+// the packed layout, which is what is read here.
+const SPLIT_IPEND_IAD: InterruptLayout = InterruptLayout {
+    pending_mask: 0xffff,
+    auto_disable_mask: 0xffff_0000,
+    auto_disable_shift: 16,
+};
+
+/// Read the interrupt state using the layout of `arch`.
+///
+/// Before V81 both masks are packed in IPENDAD. From V81 they are separate
+/// IPEND and IAD registers, and IPENDAD supplies the low 16 bits of each.
+/// minivm only uses core interrupts 0 and 2, which are in that common range.
+/// A core whose revision is not known is read as IPENDAD.
+#[inline(always)]
+pub fn interrupt_state(arch: Option<ArchVersion>) -> InterruptState {
+    let ipendad: u32;
+    unsafe { asm!("{v} = s20", v = out(reg) ipendad, options(nomem, nostack)) };
+    let layout = if arch.is_some_and(ArchVersion::has_split_ipend_iad) {
+        SPLIT_IPEND_IAD
+    } else {
+        PACKED_IPENDAD
+    };
+    InterruptState {
+        pending: ipendad & layout.pending_mask,
+        auto_disable: (ipendad & layout.auto_disable_mask) >> layout.auto_disable_shift,
+    }
+}
 
 /// Hardware thread number of the caller.
 #[inline(always)]
@@ -133,6 +184,12 @@ pub unsafe fn iassignw(int: u32, masked: u32) {
 #[inline(always)]
 pub fn swi(mask: u32) {
     unsafe { asm!("swi({v})", v = in(reg) mask, options(nomem, nostack)) };
+}
+
+/// Cancel pending software interrupts.
+#[inline(always)]
+pub fn cswi(mask: u32) {
+    unsafe { asm!("cswi({v})", v = in(reg) mask, options(nomem, nostack)) };
 }
 
 /// Clear core interrupts' auto-disable bits, making them deliverable again.

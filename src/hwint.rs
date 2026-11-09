@@ -13,6 +13,7 @@
 
 use crate::arch::{self, mmio_read, mmio_write};
 use crate::mon::{Mon, IPI_INT, L2_CORE_INT, MAX_HT, PERCPU_INTS, TIME_GUESTINT};
+use minivm_types::arch::ArchVersion;
 
 // L2VIC registers. Each bitmap has one word per 32 lines.
 const L2VIC_VID: u32 = 0x000;
@@ -49,6 +50,8 @@ const TICK_GRANULARITY: u64 = 4;
 /// by `init` before any other thread runs.
 static mut L2VIC: u32 = 0;
 static mut QTIMER: u32 = 0;
+/// Interrupt-register layout of the boot core, set before secondary threads run.
+static mut INTERRUPT_ARCH: Option<ArchVersion> = None;
 /// Lines currently enabled at the L2VIC. Guarded by the monitor lock.
 static mut ENABLED: [u32; (L2VIC_LINES / 32) as usize] = [0; (L2VIC_LINES / 32) as usize];
 
@@ -65,9 +68,10 @@ fn qtimer_frame(reg: u32) -> u32 {
 /// # Safety
 /// The device window must be mapped at these addresses, and no other thread
 /// may be running yet.
-pub unsafe fn init(l2vic_va: u32, qtimer_va: u32) {
+pub unsafe fn init(l2vic_va: u32, qtimer_va: u32, arch: Option<ArchVersion>) {
     L2VIC = l2vic_va;
     QTIMER = qtimer_va;
+    INTERRUPT_ARCH = arch;
 
     // Every line off, nothing active, level triggered. The guest turns its
     // lines on as it claims them.
@@ -97,6 +101,9 @@ pub unsafe fn init_thread(cpu: usize) {
     // The wake-up interrupt starts masked too: `Mon::kick` steers it.
     let accept = if cpu == 0 { 1u32 << L2_CORE_INT } else { 0 };
     arch::set_imask(!accept & 0xFFFF);
+    let state = arch::interrupt_state(INTERRUPT_ARCH);
+    arch::cswi(state.pending);
+    arch::ciad(state.auto_disable);
 }
 
 fn set_match(ticks: u64) {
